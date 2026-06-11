@@ -1,0 +1,333 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::Semaphore;
+
+use crate::launch::library_allowed;
+use crate::settings::default_mc_dir;
+
+const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const RESOURCES_BASE: &str = "https://resources.download.minecraft.net";
+const FABRIC_META_BASE: &str = "https://meta.fabricmc.net/v2";
+const DOWNLOAD_CONCURRENCY: usize = 12;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RemoteVersion {
+    pub id: String,
+    pub r#type: String,
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FabricLoader {
+    pub version: String,
+    pub stable: bool,
+}
+
+fn emit_status(app: &AppHandle, phase: &str, message: &str, done: u64, total: u64) {
+    let _ = app.emit(
+        "install-status",
+        serde_json::json!({
+            "phase": phase,
+            "message": message,
+            "done": done,
+            "total": total,
+        }),
+    );
+}
+
+fn aqua_dir_from(mc_dir: Option<String>) -> Result<PathBuf, String> {
+    mc_dir
+        .map(PathBuf::from)
+        .or_else(default_mc_dir)
+        .ok_or_else(|| "Could not determine .minecraft directory".to_string())
+}
+
+async fn http_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+    client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::write(dest, &bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_remote_versions(include_snapshots: Option<bool>) -> Result<Vec<RemoteVersion>, String> {
+    let client = reqwest::Client::new();
+    let manifest = http_json(&client, VERSION_MANIFEST_URL).await?;
+    let snaps = include_snapshots.unwrap_or(false);
+    let mut out = Vec::new();
+
+    if let Some(arr) = manifest["versions"].as_array() {
+        for v in arr {
+            let t = v["type"].as_str().unwrap_or("").to_string();
+            if !snaps && t != "release" {
+                continue;
+            }
+            if let (Some(id), Some(url)) = (v["id"].as_str(), v["url"].as_str()) {
+                out.push(RemoteVersion {
+                    id: id.into(),
+                    r#type: t,
+                    url: url.into(),
+                });
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn list_fabric_loaders(mc_version: String) -> Result<Vec<FabricLoader>, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{FABRIC_META_BASE}/versions/loader/{mc_version}");
+    let arr = http_json(&client, &url).await?;
+    let mut out = Vec::new();
+
+    if let Some(list) = arr.as_array() {
+        for entry in list {
+            if let Some(loader) = entry.get("loader") {
+                if let Some(version) = loader["version"].as_str() {
+                    out.push(FabricLoader {
+                        version: version.into(),
+                        stable: loader["stable"].as_bool().unwrap_or(false),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn install_version(
+    app: AppHandle,
+    loader: String,
+    mc_version: String,
+    fabric_loader_version: Option<String>,
+    mc_dir: Option<String>,
+) -> Result<String, String> {
+    let mc_dir = aqua_dir_from(mc_dir)?;
+    std::fs::create_dir_all(&mc_dir).map_err(|e| e.to_string())?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("AquaClient/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    install_vanilla(&app, &client, &mc_version, &mc_dir).await?;
+
+    if loader == "fabric" {
+        let loader_version = match fabric_loader_version {
+    Some(v) if !v.trim().is_empty() => v,
+    _ => {
+        let loaders = list_fabric_loaders(mc_version.clone()).await?;
+        if let Some(stable) = loaders.iter().find(|l| l.stable) {
+            stable.version.clone()
+        } else if let Some(first) = loaders.first() {
+            first.version.clone()
+        } else {
+            return Err("No Fabric loader versions were found".to_string());
+        }
+    }
+};
+
+        let profile_id = install_fabric_profile(&app, &client, &mc_version, &loader_version, &mc_dir).await?;
+        emit_status(&app, "done", &format!("Installed {profile_id}"), 1, 1);
+        Ok(profile_id)
+    } else {
+        emit_status(&app, "done", &format!("Installed {mc_version}"), 1, 1);
+        Ok(mc_version)
+    }
+}
+
+async fn install_vanilla(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    mc_version: &str,
+    mc_dir: &Path,
+) -> Result<(), String> {
+    emit_status(app, "starting", &format!("Installing vanilla {mc_version}..."), 0, 0);
+
+    let version_dir = mc_dir.join("versions").join(mc_version);
+    let json_path = version_dir.join(format!("{mc_version}.json"));
+    let jar_path = version_dir.join(format!("{mc_version}.jar"));
+    std::fs::create_dir_all(&version_dir).map_err(|e| e.to_string())?;
+
+    let manifest = http_json(client, VERSION_MANIFEST_URL).await?;
+    let version_url = manifest["versions"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|v| v["id"].as_str() == Some(mc_version)))
+        .and_then(|v| v["url"].as_str())
+        .ok_or_else(|| format!("Unknown Minecraft version: {mc_version}"))?;
+
+    emit_status(app, "progress", "Fetching version JSON...", 0, 0);
+    let version_json = http_json(client, version_url).await?;
+    std::fs::write(&json_path, serde_json::to_string_pretty(&version_json).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(jar_url) = version_json["downloads"]["client"]["url"].as_str() {
+        emit_status(app, "progress", &format!("Downloading {mc_version}.jar..."), 0, 0);
+        download_file(client, jar_url, &jar_path).await?;
+    }
+
+    if let Some(libs) = version_json["libraries"].as_array() {
+        let libs_root = mc_dir.join("libraries");
+        let mut to_dl: Vec<(String, PathBuf)> = Vec::new();
+        for lib in libs {
+            if !library_allowed(lib) {
+                continue;
+            }
+            let Some(url) = lib["downloads"]["artifact"]["url"].as_str() else { continue };
+            let Some(path) = lib["downloads"]["artifact"]["path"].as_str() else { continue };
+            let dest = libs_root.join(path);
+            if dest.exists() {
+                continue;
+            }
+            to_dl.push((url.to_string(), dest));
+        }
+        download_many(app, client, to_dl, "library").await?;
+    }
+
+    let asset_index_id = version_json["assetIndex"]["id"].as_str().unwrap_or("legacy").to_string();
+    let asset_index_url = version_json["assetIndex"]["url"].as_str().unwrap_or("").to_string();
+    let asset_index_path = mc_dir.join("assets").join("indexes").join(format!("{asset_index_id}.json"));
+
+    let asset_index: serde_json::Value = if asset_index_path.exists() {
+        let raw = std::fs::read_to_string(&asset_index_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&raw).map_err(|e| e.to_string())?
+    } else if !asset_index_url.is_empty() {
+        emit_status(app, "progress", "Fetching asset index...", 0, 0);
+        let idx = http_json(client, &asset_index_url).await?;
+        std::fs::create_dir_all(asset_index_path.parent().unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&asset_index_path, serde_json::to_string(&idx).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        idx
+    } else {
+        return Ok(());
+    };
+
+    if let Some(map) = asset_index["objects"].as_object() {
+        let assets_root = mc_dir.join("assets").join("objects");
+        let mut to_dl: Vec<(String, PathBuf)> = Vec::new();
+        for (_name, info) in map {
+            let Some(hash) = info["hash"].as_str() else { continue };
+            if hash.len() < 2 {
+                continue;
+            }
+            let prefix = &hash[0..2];
+            let dest = assets_root.join(prefix).join(hash);
+            if dest.exists() {
+                continue;
+            }
+            let url = format!("{RESOURCES_BASE}/{prefix}/{hash}");
+            to_dl.push((url, dest));
+        }
+        download_many(app, client, to_dl, "asset").await?;
+    }
+
+    Ok(())
+}
+
+async fn install_fabric_profile(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    mc_version: &str,
+    loader_version: &str,
+    mc_dir: &Path,
+) -> Result<String, String> {
+    emit_status(
+        app,
+        "progress",
+        &format!("Fetching Fabric profile for {mc_version} / {loader_version}..."),
+        0,
+        0,
+    );
+
+    let url = format!(
+        "{FABRIC_META_BASE}/versions/loader/{mc_version}/{loader_version}/profile/json"
+    );
+    let profile = http_json(client, &url).await?;
+    let profile_id = profile["id"]
+        .as_str()
+        .unwrap_or("fabric-loader")
+        .to_string();
+
+    let profile_dir = mc_dir.join("versions").join(&profile_id);
+    std::fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
+    let json_path = profile_dir.join(format!("{profile_id}.json"));
+    std::fs::write(
+        &json_path,
+        serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+
+    emit_status(app, "progress", &format!("Installed Fabric profile {profile_id}"), 1, 1);
+    Ok(profile_id)
+}
+
+async fn download_many(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    to_dl: Vec<(String, PathBuf)>,
+    label: &str,
+) -> Result<(), String> {
+    let total = to_dl.len() as u64;
+    if total == 0 {
+        return Ok(());
+    }
+
+    emit_status(app, "progress", &format!("Downloading {total} {label} files..."), 0, total);
+
+    let sem = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY));
+    let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut tasks = Vec::new();
+
+    for (url, dest) in to_dl {
+        let sem2 = sem.clone();
+        let app2 = app.clone();
+        let client2 = client.clone();
+        let done2 = done.clone();
+        let label2 = label.to_string();
+        tasks.push(tokio::spawn(async move {
+            let _permit = sem2.acquire().await.ok();
+            let result = download_file(&client2, &url, &dest).await;
+            let n = done2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n % 25 == 0 || n == total {
+                emit_status(&app2, "progress", &format!("Downloading {label2}s ({n}/{total})..."), n, total);
+            }
+            result
+        }));
+    }
+
+    for task in tasks {
+        task.await.map_err(|e| e.to_string())??;
+    }
+
+    Ok(())
+}
