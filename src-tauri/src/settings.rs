@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -16,13 +17,19 @@ pub struct Settings {
     pub ram_mb: u32,
     pub jvm_args: String,
     pub show_snapshots: bool,
+    #[serde(default = "default_minimize_on_launch")]
+    pub minimize_on_launch: bool,
+}
+
+fn default_minimize_on_launch() -> bool {
+    true
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            username: "AquaPlayer".into(),
-            version: "1.20.1".into(),
+            username: "Player".into(),
+            version: "1.21.11".into(),
             loader_type: "vanilla".into(),
             fabric_loader_version: None,
             java_path: None,
@@ -31,6 +38,7 @@ impl Default for Settings {
             ram_mb: 2048,
             jvm_args: "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+DisableExplicitGC".into(),
             show_snapshots: false,
+            minimize_on_launch: true,
         }
     }
 }
@@ -68,7 +76,75 @@ pub fn default_mc_dir() -> Option<PathBuf> {
 }
 
 pub fn instance_dir(aqua_dir: &std::path::Path, profile_id: &str) -> PathBuf {
-    aqua_dir.join("instances").join(profile_id)
+    // Prefer new `profiles/` layout but remain compatible with older `instances/` folder.
+    let profiles = aqua_dir.join("profiles").join(profile_id);
+    let legacy = aqua_dir.join("instances").join(profile_id);
+    if legacy.exists() {
+        legacy
+    } else {
+        profiles
+    }
+}
+
+/// Ensure the launcher root layout exists and return the path to the launcher root.
+pub fn ensure_launcher_layout() -> Option<PathBuf> {
+    let root = default_mc_dir()?;
+    // Top-level folders recommended by the new layout
+    let dirs = [
+        root.join("caches").join("icons"),
+        root.join("caches").join("screenshots"),
+        root.join("caches").join("thumbnails"),
+        root.join("caches").join("avatars"),
+        root.join("launcher_logs"),
+        root.join("launcher_logs").join("archived"),
+        root.join("meta").join("assets"),
+        root.join("meta").join("java_versions"),
+        root.join("meta").join("libraries"),
+        root.join("meta").join("natives"),
+        root.join("meta").join("versions"),
+        root.join("meta").join("manifests"),
+        root.join("meta").join("log_configs"),
+        root.join("profiles"),
+        root.join("storage"),
+        root.join("databases"),
+        root.join("cookies"),
+        root.join("localstorage"),
+        root.join("aqua_blobs"),
+        // Compatibility: keep legacy folders so existing backend code continues to work
+        root.join("versions"),
+        root.join("assets"),
+        root.join("libraries"),
+        root.join("instances"),
+    ];
+
+    for d in dirs.iter() {
+        let _ = std::fs::create_dir_all(d);
+    }
+
+    Some(root)
+}
+
+/// Returns the launcher logs directory (ensures layout exists).
+pub fn launcher_logs_dir() -> Option<PathBuf> {
+    ensure_launcher_layout().map(|r| r.join("launcher_logs"))
+}
+
+/// Append a structured launcher log entry to the current session file. Best-effort - errors are ignored.
+pub fn append_launcher_log(level: &str, source: &str, message: &str) {
+    if let Some(dir) = launcher_logs_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let fname = format!("session_{}.log", app_timestamp());
+        let path = dir.join(fname);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let entry = serde_json::json!({
+                "timestamp": app_timestamp(),
+                "level": level,
+                "source": source,
+                "message": message,
+            });
+            let _ = writeln!(f, "{}", entry.to_string());
+        }
+    }
 }
 
 fn read_total_memory_mb() -> u64 {

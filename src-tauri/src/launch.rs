@@ -1,13 +1,14 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::auth::load_account_file;
 use crate::java::ensure_java;
-use crate::settings::{default_mc_dir, instance_dir, Settings};
+use crate::settings::{default_mc_dir, instance_dir, Settings, append_launcher_log};
 
 pub struct LaunchState {
     pub running: Mutex<bool>,
@@ -87,12 +88,14 @@ let _ = app.emit("launch-status", serde_json::json!({
     "phase": "checking",
     "message": "Resolving Java..."
 }));
+    append_launcher_log("info", "launch", "Resolving Java...");
 
     let result = build_and_spawn(&app, &settings).await;
     if let Err(e) = &result {
         if let Ok(mut running) = state.running.lock() {
             *running = false;
         }
+        append_launcher_log("error", "launch", e);
         let _ = app.emit("launch-status", serde_json::json!({"phase": "error", "message": e}));
     }
     result
@@ -166,6 +169,17 @@ fn maven_path_from_coord(coord: &str) -> String {
         None => format!("{artifact}-{version}.{ext}"),
     };
     format!("{group}/{artifact}/{version}/{filename}")
+}
+
+fn quote_command_arg(arg: &str) -> String {
+    if arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | ':' | '.' | '_' | '-' | '=' | '+'))
+    {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
 }
 
 fn native_extensions() -> &'static [&'static str] {
@@ -290,6 +304,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         .ok_or_else(|| "Could not determine .minecraft directory.".to_string())?;
 
     let _ = std::fs::create_dir_all(&mc_dir);
+    append_launcher_log("info", "storage", &format!("Using launcher root: {}", mc_dir.display()));
 
     let effective_version = effective_version_id(settings);
 
@@ -299,6 +314,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         settings.java_runtime.clone(),
         Some(settings.version.clone()),
     ).await?;
+    append_launcher_log("info", "java", &format!("Detected Java: {}", java));
 
     let (v, version_dir) = load_effective_version_json(&mc_dir, &effective_version)?;
 
@@ -324,6 +340,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
 
     let libs_root = mc_dir.join("libraries");
     let mut classpath: Vec<PathBuf> = Vec::new();
+    let mut missing_libraries: Vec<PathBuf> = Vec::new();
     let mut seen_ga: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(libs) = v.get("libraries").and_then(|l| l.as_array()) {
         for lib in libs {
@@ -345,8 +362,28 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
             };
             if !seen_ga.insert(ga) { continue; }
             let full = libs_root.join(&path);
-            if full.exists() { classpath.push(full); }
+            if full.exists() {
+                classpath.push(full);
+            } else {
+                missing_libraries.push(full);
+            }
         }
+    }
+    if !missing_libraries.is_empty() {
+        let list = missing_libraries
+            .iter()
+            .take(16)
+            .map(|p| format!("  - {}", p.display()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let extra = if missing_libraries.len() > 16 {
+            format!("\n  ... and {} more", missing_libraries.len() - 16)
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "Launch classpath is incomplete. Reinstall this version; missing libraries:\n{list}{extra}"
+        ));
     }
     classpath.push(version_jar_path);
     let cp_sep = if cfg!(windows) { ";" } else { ":" };
@@ -356,12 +393,17 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         .join(cp_sep);
 
     let mut cmd = Command::new(&java);
+    let mut launch_args: Vec<String> = Vec::new();
+    let mut add_arg = |cmd: &mut Command, arg: String| {
+        cmd.arg(&arg);
+        launch_args.push(arg);
+    };
     let ram = settings.ram_mb.max(512);
-    cmd.arg(format!("-Xmx{}M", ram));
-    cmd.arg("-Xms512M");
+    add_arg(&mut cmd, format!("-Xmx{}M", ram));
+    add_arg(&mut cmd, "-Xms512M".to_string());
     for arg in settings.jvm_args.split_whitespace() {
         if !arg.trim().is_empty() {
-            cmd.arg(arg.trim());
+            add_arg(&mut cmd, arg.trim().to_string());
         }
     }
 
@@ -373,13 +415,14 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
                 serde_json::json!({"stream": "stderr", "line": format!("[aqua] natives extract warning: {e}")}));
         }
     }
-    cmd.arg(format!("-Djava.library.path={}", natives_dir.display()));
-    cmd.arg(format!("-Djna.tmpdir={}", natives_dir.display()));
-    cmd.arg(format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={}", natives_dir.display()));
-    cmd.arg(format!("-Dio.netty.native.workdir={}", natives_dir.display()));
+    add_arg(&mut cmd, format!("-Djava.library.path={}", natives_dir.display()));
+    add_arg(&mut cmd, format!("-Djna.tmpdir={}", natives_dir.display()));
+    add_arg(&mut cmd, format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={}", natives_dir.display()));
+    add_arg(&mut cmd, format!("-Dio.netty.native.workdir={}", natives_dir.display()));
 
-    cmd.arg("-cp").arg(&cp_str);
-    cmd.arg(&main_class);
+    add_arg(&mut cmd, "-cp".to_string());
+    add_arg(&mut cmd, cp_str.clone());
+    add_arg(&mut cmd, main_class.clone());
 
     let active = load_account_file(app);
     let (username, uuid, access_token, user_type) = match active {
@@ -398,19 +441,45 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     let _ = std::fs::create_dir_all(game_dir.join("resourcepacks"));
     let _ = std::fs::create_dir_all(game_dir.join("shaderpacks"));
 
-    cmd.arg("--username").arg(&username);
-    cmd.arg("--version").arg(&effective_version);
-    cmd.arg("--gameDir").arg(&game_dir);
-    cmd.arg("--assetsDir").arg(mc_dir.join("assets"));
-    cmd.arg("--assetIndex").arg(&asset_index);
-    cmd.arg("--uuid").arg(&uuid);
-    cmd.arg("--accessToken").arg(&access_token);
-    cmd.arg("--userType").arg(&user_type);
-    cmd.arg("--versionType").arg("release");
+    add_arg(&mut cmd, "--username".to_string());
+    add_arg(&mut cmd, username.clone());
+    add_arg(&mut cmd, "--version".to_string());
+    add_arg(&mut cmd, effective_version.clone());
+    add_arg(&mut cmd, "--gameDir".to_string());
+    add_arg(&mut cmd, game_dir.to_string_lossy().to_string());
+    add_arg(&mut cmd, "--assetsDir".to_string());
+    add_arg(&mut cmd, mc_dir.join("assets").to_string_lossy().to_string());
+    add_arg(&mut cmd, "--assetIndex".to_string());
+    add_arg(&mut cmd, asset_index.clone());
+    add_arg(&mut cmd, "--uuid".to_string());
+    add_arg(&mut cmd, uuid.clone());
+    add_arg(&mut cmd, "--accessToken".to_string());
+    add_arg(&mut cmd, access_token.clone());
+    add_arg(&mut cmd, "--userType".to_string());
+    add_arg(&mut cmd, user_type.clone());
+    add_arg(&mut cmd, "--versionType".to_string());
+    add_arg(&mut cmd, "release".to_string());
 
     cmd.current_dir(&game_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    drop(add_arg);
+
+    let command_line = std::iter::once(java.clone())
+        .chain(launch_args.iter().cloned())
+        .map(|arg| quote_command_arg(&arg))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let _ = app.emit(
+        "launch-log",
+        serde_json::json!({"stream": "stdout", "line": format!("[aqua] Java command: {command_line}")}),
+    );
+    append_launcher_log("info", "java", &format!("Java command: {command_line}"));
+    let _ = app.emit(
+        "launch-log",
+        serde_json::json!({"stream": "stdout", "line": format!("[aqua] Classpath: {cp_str}")}),
+    );
+    append_launcher_log("info", "classpath", &format!("Classpath: {cp_str}"));
 
     let _ = app.emit("launch-status", serde_json::json!({
         "phase": "starting",
@@ -426,34 +495,84 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         "message": "Minecraft running"
     }));
 
+    let recent_output = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(24)));
+
     if let Some(out) = child.stdout.take() {
         let app2 = app.clone();
+        let recent = Arc::clone(&recent_output);
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
+                if let Ok(mut lines) = recent.lock() {
+                    if lines.len() >= 24 {
+                        lines.pop_front();
+                    }
+                    lines.push_back(format!("stdout: {line}"));
+                }
                 let _ = app2.emit("launch-log",
                     serde_json::json!({"stream": "stdout", "line": line}));
+                append_launcher_log("info", "minecraft.stdout", &line);
             }
         });
     }
     if let Some(err) = child.stderr.take() {
         let app2 = app.clone();
+        let recent = Arc::clone(&recent_output);
         std::thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if let Ok(mut lines) = recent.lock() {
+                    if lines.len() >= 24 {
+                        lines.pop_front();
+                    }
+                    lines.push_back(format!("stderr: {line}"));
+                }
                 let _ = app2.emit("launch-log",
                     serde_json::json!({"stream": "stderr", "line": line}));
+                append_launcher_log("error", "minecraft.stderr", &line);
             }
         });
     }
 
     let app3 = app.clone();
+    // capture handy context for the exit event
+    let java_str = java.clone();
+    let eff_ver = effective_version.clone();
+    let loader_type = settings.loader_type.clone();
+    let cwd = game_dir.clone();
+    let recent = Arc::clone(&recent_output);
+
     std::thread::spawn(move || {
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
         if let Some(state) = app3.try_state::<LaunchState>() {
             if let Ok(mut running) = state.running.lock() { *running = false; }
         }
-        let _ = app3.emit("launch-status",
-            serde_json::json!({"phase": "exited", "code": code,
-                "message": format!("Minecraft exited (code {code}).")}));
+        let recent_lines = recent
+            .lock()
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let error_hint = if code == 0 {
+            String::new()
+        } else if recent_lines.is_empty() {
+            "Minecraft closed without writing an error to stdout or stderr. Open logs for full launch context.".to_string()
+        } else {
+            recent_lines.join("\n")
+        };
+        let message = if code == 0 {
+            "Minecraft exited normally.".to_string()
+        } else {
+            format!("Minecraft exited with code {code}.\n{error_hint}")
+        };
+            append_launcher_log(if code == 0 {"info"} else {"error"}, "launch.exit", &message);
+            let _ = app3.emit("launch-status",
+                serde_json::json!({
+                    "phase": "exited",
+                    "code": code,
+                    "message": message,
+                    "error": error_hint,
+                    "java": java_str,
+                    "version": eff_ver,
+                    "loader": loader_type,
+                    "cwd": cwd.to_string_lossy().to_string()
+                }));
     });
 
     Ok(())

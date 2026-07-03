@@ -4,20 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aqua Client</title>
-    <meta name="theme-color" content="#0b1020" />
+    <meta name="theme-color" content="#0d1117" />
     <link rel="icon" href="/official.png" />
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <div id="bg-layer" class="bg-layer" aria-hidden="true"></div>
+
     <div id="app"></div>
 
-    <div id="splash" class="splash">
+    <div id="splash" class="splash" aria-hidden="false">
+      <div class="splash-backdrop"></div>
       <div class="splash-panel">
-        <div class="splash-name">Aqua Client</div>
-        <div class="splash-text">Starting launcher…</div>
-        <div class="splash-bar">
+        <img class="splash-logo" src="/official.png" alt="" width="64" height="64" />
+        <div class="splash-name">Aqua</div>
+        <div class="splash-text">Preparing launcher…</div>
+        <div class="splash-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
           <div class="splash-fill"></div>
+          <div class="splash-shimmer"></div>
         </div>
+        <div class="splash-version">v0.1.0</div>
       </div>
     </div>
 

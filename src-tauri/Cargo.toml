@@ -1,7 +1,7 @@
 [package]
 name = "aqua-client"
-version = "0.1.0"
-description = "Aqua Client — a Rust-powered Minecraft launcher"
+version = "1.0.0"
+description = "Aqua Client — A Lightweight Rust-powered Minecraft launcher"
 authors = ["you"]
 edition = "2021"
 rust-version = "1.77"

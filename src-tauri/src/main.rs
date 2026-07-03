@@ -11,8 +11,11 @@ mod mod_browser;
 use std::sync::Mutex;
 
 use crate::launch::LaunchState;
+use crate::settings::ensure_launcher_layout;
 
 fn main() {
+    // ensure directory layout exists early
+    let _ = ensure_launcher_layout();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

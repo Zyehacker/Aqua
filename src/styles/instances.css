@@ -1,0 +1,12 @@
+.instance-grid {
+display: grid;
+grid-template-columns: repeat(auto-fill,minmax(220px,1fr));
+gap: 20px;
+}
+
+.instance-card {
+background: rgba(255,255,255,.04);
+border-radius: 20px;
+padding: 20px;
+}
+

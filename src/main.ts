@@ -1,85 +1,65 @@
-import "./styles/app.css";
-import { state } from "./state";
+import { bindEvents, loadInitialData, setRerender, setupTauriListeners } from "./bindings/events";
+import { renderLayout, renderPage } from "./layouts/AppLayout";
 import { renderSidebar } from "./components/Sidebar";
-import { renderRightRail } from "./components/RightRail";
-import { renderHome } from "./components/HomePage";
-import { renderVersions } from "./components/VersionsPage";
-import { renderMods } from "./components/ModsPage";
-import { renderSettings } from "./components/SettingsPage";
-import { renderSplash } from "./components/SplashScreen";
+import { renderTopBar } from "./components/TopBar";
+import { state } from "./types/state";
 
-const root = document.getElementById("app");
-if (!root) throw new Error("Missing #app");
+const app = document.querySelector<HTMLDivElement>("#app")!;
+const splash = document.querySelector<HTMLDivElement>("#splash");
+let renderedFrame = false;
+let lastPrivacyAccepted = state.privacyAccepted;
 
-const splash = document.getElementById("splash");
+function render(): void {
+  const needsFrame =
+    !renderedFrame ||
+    lastPrivacyAccepted !== state.privacyAccepted ||
+    !app.querySelector(".app-frame");
 
-function render() {
-  const rightRail = renderRightRail(state.page);
+  if (needsFrame) {
+    app.innerHTML = renderLayout(state);
+    renderedFrame = true;
+    lastPrivacyAccepted = state.privacyAccepted;
+    bindEvents(app);
+    return;
+  }
 
-  root.innerHTML = `
-    <div class="app-shell ${state.page !== "home" ? "no-right" : ""}">
-      ${renderSidebar(state.page)}
-      <main class="center-shell">
-        <div class="center-top">
-          <div class="center-copy">
-            <div class="center-title">Aqua Client</div>
-            <div class="center-subtitle">${state.selectedInstanceName || "Select an instance"}</div>
-          </div>
-          <div class="center-pills">
-            <span class="info-pill ${state.installState === "installed" ? "ok" : "warn"}">${state.installLabel}</span>
-            <span class="info-pill">${state.selectedLoader}</span>
-          </div>
-        </div>
+  const sidebar = app.querySelector<HTMLElement>(".sidebar-rail");
+  const topbar = app.querySelector<HTMLElement>(".topbar");
+  const main = app.querySelector<HTMLElement>("#main-scroll");
 
-        <div class="center-scroll">
-          ${
-            state.page === "home"
-              ? renderHome()
-              : state.page === "versions"
-                ? renderVersions()
-                : state.page === "mods"
-                  ? renderMods()
-                  : renderSettings()
-          }
-        </div>
-      </main>
-      ${rightRail}
-    </div>
-  `;
+  if (sidebar) sidebar.outerHTML = renderSidebar();
+  if (topbar) topbar.outerHTML = renderTopBar();
+  if (main) main.innerHTML = renderPage(state);
 
-  bind();
+  bindEvents(app);
 }
 
-function bind() {
-  document.querySelectorAll("[data-page]").forEach((el) => {
-    el.addEventListener("click", () => {
-      state.page = (el as HTMLElement).dataset.page as any;
-      render();
-    });
-  });
+window.addEventListener("aqua:lazy-page-ready", render);
 
-  document.querySelectorAll("[data-select-instance]").forEach((el) => {
-    el.addEventListener("click", () => {
-      const id = (el as HTMLElement).dataset.selectInstance!;
-      const inst = state.instances.find((x) => x.id === id);
-      if (!inst) return;
-      state.selectedInstanceId = id;
-      state.selectedInstanceName = inst.name;
-      state.selectedLoader = inst.loader;
-      render();
-    });
-  });
-
-  document.querySelectorAll("[data-action='splash-close']").forEach((el) => {
-    el.addEventListener("click", () => {
+async function runSplash(): Promise<void> {
+  return new Promise((resolve) => {
+    const fill = splash?.querySelector<HTMLElement>(".splash-fill");
+    if (fill) {
+      let w = 0;
+      const id = setInterval(() => {
+        w = Math.min(100, w + 4);
+        fill.style.width = `${w}%`;
+        if (w >= 100) clearInterval(id);
+      }, 40);
+    }
+    setTimeout(() => {
       splash?.classList.add("hide");
-    });
+      resolve();
+    }, 1800);
   });
 }
 
-setTimeout(() => {
-  splash?.classList.add("hide");
+async function boot(): Promise<void> {
+  setRerender(render);
+  setupTauriListeners();
+  await runSplash();
+  await loadInitialData();
   render();
-}, 2200);
+}
 
-render();
+boot();

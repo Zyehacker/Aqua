@@ -75,6 +75,60 @@ async fn download_file(client: &reqwest::Client, url: &str, dest: &Path) -> Resu
     Ok(())
 }
 
+fn maven_path_from_coord(coord: &str) -> Option<String> {
+    let (coord, ext) = match coord.split_once('@') {
+        Some((c, e)) => (c, e.to_string()),
+        None => (coord, "jar".to_string()),
+    };
+    let parts: Vec<&str> = coord.split(':').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let group = parts[0].replace('.', "/");
+    let artifact = parts[1];
+    let version = parts[2];
+    let classifier = parts.get(3).copied();
+    let filename = match classifier {
+        Some(c) => format!("{artifact}-{version}-{c}.{ext}"),
+        None => format!("{artifact}-{version}.{ext}"),
+    };
+
+    Some(format!("{group}/{artifact}/{version}/{filename}"))
+}
+
+fn library_artifact(lib: &serde_json::Value) -> Option<(String, String)> {
+    if let (Some(url), Some(path)) = (
+        lib.get("downloads")
+            .and_then(|d| d.get("artifact"))
+            .and_then(|a| a.get("url"))
+            .and_then(|u| u.as_str()),
+        lib.get("downloads")
+            .and_then(|d| d.get("artifact"))
+            .and_then(|a| a.get("path"))
+            .and_then(|p| p.as_str()),
+    ) {
+        if !url.trim().is_empty() && !path.trim().is_empty() {
+            return Some((url.to_string(), path.to_string()));
+        }
+    }
+
+    let name = lib.get("name").and_then(|n| n.as_str())?;
+    let base_url = lib.get("url").and_then(|u| u.as_str())?;
+    let path = maven_path_from_coord(name)?;
+    let url = format!("{}/{}", base_url.trim_end_matches('/'), path);
+    Some((url, path))
+}
+
+fn jar_contains_class(jar_path: &Path, class_path: &str) -> Result<bool, String> {
+    let file = std::fs::File::open(jar_path)
+        .map_err(|e| format!("Could not open {}: {e}", jar_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Could not read {} as a JAR: {e}", jar_path.display()))?;
+    let result = archive.by_name(class_path).is_ok();
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn list_remote_versions(include_snapshots: Option<bool>) -> Result<Vec<RemoteVersion>, String> {
     let client = reqwest::Client::new();
@@ -286,6 +340,61 @@ async fn install_fabric_profile(
         serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+
+    let libs_root = mc_dir.join("libraries");
+    let mut to_dl: Vec<(String, PathBuf)> = Vec::new();
+    let mut loader_jar: Option<PathBuf> = None;
+
+    if let Some(libs) = profile["libraries"].as_array() {
+        for lib in libs {
+            if !library_allowed(lib) {
+                continue;
+            }
+
+            let Some((url, path)) = library_artifact(lib) else {
+                continue;
+            };
+
+            let dest = libs_root.join(&path);
+            if lib["name"]
+                .as_str()
+                .map(|name| name.starts_with("net.fabricmc:fabric-loader:"))
+                .unwrap_or(false)
+            {
+                loader_jar = Some(dest.clone());
+            }
+            if !dest.exists() {
+                to_dl.push((url, dest));
+            }
+        }
+    }
+
+    download_many(app, client, to_dl, "Fabric library").await?;
+
+    let loader_jar = loader_jar.ok_or_else(|| {
+        format!("Fabric profile {profile_id} did not declare net.fabricmc:fabric-loader")
+    })?;
+    if !loader_jar.exists() {
+        return Err(format!(
+            "Fabric Loader JAR was not downloaded: {}",
+            loader_jar.display()
+        ));
+    }
+    let knot_class = "net/fabricmc/loader/impl/launch/knot/KnotClient.class";
+    if !jar_contains_class(&loader_jar, knot_class)? {
+        return Err(format!(
+            "Fabric Loader JAR does not contain {knot_class}: {}",
+            loader_jar.display()
+        ));
+    }
+
+    let _ = app.emit(
+        "launch-log",
+        serde_json::json!({
+            "stream": "stdout",
+            "line": format!("[aqua] Verified Fabric Loader {loader_version}: {}", loader_jar.display())
+        }),
+    );
 
     emit_status(app, "progress", &format!("Installed Fabric profile {profile_id}"), 1, 1);
     Ok(profile_id)

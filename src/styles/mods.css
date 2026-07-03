@@ -1,0 +1,129 @@
+.search {
+  width: 100%;
+  border-radius: 16px;
+  padding: 14px;
+  border: none;
+}
+
+.mod-card-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.mod-browser-icon {
+  width: 64px;
+  height: 64px;
+  min-width: 64px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.mod-browser-icon-fallback {
+  width: 64px;
+  height: 64px;
+  min-width: 64px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mod-card-icon {
+  width: 56px;
+  height: 56px;
+  min-width: 56px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.mod-card-icon-fallback {
+  width: 56px;
+  height: 56px;
+  min-width: 56px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.mod-card-title-group {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.mod-card-title-group h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compatibility-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  width: fit-content;
+}
+
+.compatibility-badge.compatible {
+  background: rgba(50, 215, 75, 0.15);
+  color: #32d74b;
+}
+
+.compatibility-badge.partial {
+  background: rgba(255, 214, 10, 0.15);
+  color: #ffd60a;
+}
+
+.compatibility-badge.incompatible {
+  background: rgba(255, 69, 58, 0.15);
+  color: #ff453a;
+}
+
+.mod-card-meta {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mod-card-desc {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mod-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.mod-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.mod-card-actions button {
+  flex: 1;
+  font-size: 12px;
+}
