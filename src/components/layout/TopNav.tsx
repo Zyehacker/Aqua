@@ -16,6 +16,16 @@ import {
   Sparkles,
   Settings2,
 } from 'lucide-react'
+
+const ICON_MAP: Record<string, any> = {
+  '/': Waves,
+  '/instances': Server,
+  '/content': FolderOpen,
+  '/profiles': User,
+  '/downloads': Download,
+  '/performance': Sparkles,
+  '/settings': Settings2,
+}
 import { NAV_ITEMS, CURRENT_PROFILE } from '../../data/mock'
 import { appActions, useAppStore } from '../../stores/appStore'
 import { cn } from '../../utils/cn'
@@ -44,24 +54,16 @@ export default function TopNav() {
 
       <nav className="top-nav__links" aria-label="Primary">
         {NAV_ITEMS.map((item) => {
-          const ICON_MAP: Record<string, any> = {
-            '/': Waves,
-            '/instances': Server,
-            '/content': FolderOpen,
-            '/profiles': User,
-            '/downloads': Download,
-            '/performance': Sparkles,
-            '/settings': Settings2,
-          }
           const Icon = ICON_MAP[item.to] ?? ArrowRight
           return (
             <NavLink
               key={item.to}
               to={item.to}
               end={item.to === '/'}
+              aria-label={item.label}
               className={({ isActive }) => cn('top-nav__link', isActive && 'active')}
             >
-              <Icon size={16} className="icon" />
+              <Icon size={16} className="icon" aria-hidden="true" />
               <span>{item.label}</span>
             </NavLink>
           )

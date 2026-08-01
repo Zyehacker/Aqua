@@ -1,3 +1,4 @@
+import React, { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, FolderOpen, Play, Plus, Trash2 } from 'lucide-react'
 import Button from '../../components/ui/Button'
@@ -9,6 +10,13 @@ import { INSTANCES } from '../../data/mock'
 
 export default function InstancesPage() {
   const toast = useToast()
+
+  const launch = useCallback(async (id: string, name: string) => {
+    toast.pushToast(`Starting ${name}…`, 'info')
+    const res = await tauri.launchInstance(id).catch(() => null)
+    if (res === null) toast.pushToast(`Launched ${name}`, 'success')
+    else toast.pushToast(`Launched ${name}`, 'success')
+  }, [toast])
 
   return (
     <div className="page">
@@ -63,12 +71,7 @@ export default function InstancesPage() {
                 <Button
                   size="sm"
                   variant="aqua"
-                  onClick={async () => {
-                    toast.pushToast(`Starting ${instance.name}…`, 'info')
-                    const res = await tauri.launchInstance(instance.id).catch(() => null)
-                    if (res === null) toast.pushToast(`Launched ${instance.name}`, 'success')
-                    else toast.pushToast(`Launched ${instance.name}`, 'success')
-                  }}
+                  onClick={() => launch(instance.id, instance.name)}
                 >
                   <Play size={14} />
                   Play
