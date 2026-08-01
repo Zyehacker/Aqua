@@ -4,7 +4,7 @@ import { Activity, Cpu, Gauge, HardDrive, RefreshCw, Thermometer } from 'lucide-
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
 import ProgressBar from '../../components/ui/ProgressBar'
-import { useToast } from '../../components/ToastProvider'
+import { useToast } from '../../hooks/useToast'
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))

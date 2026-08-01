@@ -1,5 +1,5 @@
 import { motion, type HTMLMotionProps } from 'framer-motion'
-import React, { type ReactNode, memo } from 'react'
+import { type ReactNode, memo } from 'react'
 import { cn } from '../../utils/cn'
 
 type Variant = 'primary' | 'aqua' | 'ghost' | 'danger'

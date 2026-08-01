@@ -1,5 +1,5 @@
 [package]
-name = "Aqua Client"
+name = "aqua-client"
 version = "1.1.0"
 description = "Aqua Client — A Lightweight Minecraft launcher"
 authors = ["Zye"]

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -10,11 +11,14 @@ const DOWNLOAD_RETRIES: usize = 3;
 const RETRY_DELAY_MS: u64 = 700;
 
 use crate::launch::library_allowed;
+use crate::java::ensure_java;
 use crate::settings::{default_mc_dir, append_launcher_log};
 
 const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const RESOURCES_BASE: &str = "https://resources.download.minecraft.net";
 const FABRIC_META_BASE: &str = "https://meta.fabricmc.net/v2";
+const FORGE_MAVEN_BASE: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
+const FORGE_PROMOTIONS_URL: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
 const DOWNLOAD_CONCURRENCY: usize = 12;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -28,6 +32,12 @@ pub struct RemoteVersion {
 pub struct FabricLoader {
     pub version: String,
     pub stable: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ForgeLoader {
+    pub version: String,
+    pub recommended: bool,
 }
 
 fn emit_status(app: &AppHandle, phase: &str, message: &str, done: u64, total: u64) {
@@ -58,6 +68,27 @@ async fn http_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Va
                     return Err(format!("HTTP {} for {url}", resp.status()));
                 }
                 return resp.json().await.map_err(|e| e.to_string());
+            }
+            Err(e) => {
+                last_err = Some(e.to_string());
+                if attempt < DOWNLOAD_RETRIES {
+                    sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| format!("Failed to fetch {url}")))
+}
+
+async fn http_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let mut last_err = None;
+    for attempt in 1..=DOWNLOAD_RETRIES {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    return Err(format!("HTTP {} for {url}", resp.status()));
+                }
+                return resp.text().await.map_err(|e| e.to_string());
             }
             Err(e) => {
                 last_err = Some(e.to_string());
@@ -208,6 +239,70 @@ pub async fn list_fabric_loaders(mc_version: String) -> Result<Vec<FabricLoader>
     Ok(out)
 }
 
+fn extract_xml_versions(xml: &str, mc_version: &str) -> Vec<String> {
+    let prefix = format!("{mc_version}-");
+    let mut out = Vec::new();
+    for part in xml.split("<version>").skip(1) {
+        let Some((raw, _)) = part.split_once("</version>") else { continue; };
+        let Some(version) = raw.strip_prefix(&prefix) else { continue; };
+        if !version.contains("pre") && !version.contains("beta") {
+            out.push(version.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out.reverse();
+    out
+}
+
+async fn resolve_forge_loader(
+    client: &reqwest::Client,
+    mc_version: &str,
+    requested: Option<String>,
+) -> Result<String, String> {
+    if let Some(version) = requested {
+        let trimmed = version.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    if let Ok(promotions) = http_json(client, FORGE_PROMOTIONS_URL).await {
+        let promos = promotions.get("promos").and_then(|v| v.as_object());
+        if let Some(promos) = promos {
+            for suffix in ["recommended", "latest"] {
+                let key = format!("{mc_version}-{suffix}");
+                if let Some(version) = promos.get(&key).and_then(|v| v.as_str()) {
+                    return Ok(version.to_string());
+                }
+            }
+        }
+    }
+
+    let metadata = http_text(client, &format!("{FORGE_MAVEN_BASE}/maven-metadata.xml")).await?;
+    extract_xml_versions(&metadata, mc_version)
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("No Forge loader versions found for Minecraft {mc_version}"))
+}
+
+#[tauri::command]
+pub async fn list_forge_loaders(mc_version: String) -> Result<Vec<ForgeLoader>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("AquaClient/1.0")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let metadata = http_text(&client, &format!("{FORGE_MAVEN_BASE}/maven-metadata.xml")).await?;
+    let recommended = resolve_forge_loader(&client, &mc_version, None).await.ok();
+    Ok(extract_xml_versions(&metadata, &mc_version)
+        .into_iter()
+        .map(|version| ForgeLoader {
+            recommended: recommended.as_deref() == Some(version.as_str()),
+            version,
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub async fn install_version(
     app: AppHandle,
@@ -251,10 +346,64 @@ pub async fn install_version(
         let profile_id = install_fabric_profile(&app, &client, &mc_version, &loader_version, &mc_dir).await?;
         emit_status(&app, "done", &format!("Installed {profile_id}"), 1, 1);
         Ok(profile_id)
+    } else if loader == "forge" {
+        let forge_loader_version = resolve_forge_loader(&client, &mc_version, fabric_loader_version).await?;
+        let profile_id = install_forge_profile(&app, &client, &mc_version, &forge_loader_version, &mc_dir).await?;
+        emit_status(&app, "done", &format!("Installed {profile_id}"), 1, 1);
+        Ok(profile_id)
     } else {
         emit_status(&app, "done", &format!("Installed {mc_version}"), 1, 1);
         Ok(mc_version)
     }
+}
+
+async fn install_forge_profile(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    mc_version: &str,
+    forge_loader_version: &str,
+    mc_dir: &Path,
+) -> Result<String, String> {
+    let full_version = format!("{mc_version}-{forge_loader_version}");
+    let profile_id = format!("{mc_version}-forge-{forge_loader_version}");
+    let installer_name = format!("forge-{full_version}-installer.jar");
+    let installer_url = format!("{FORGE_MAVEN_BASE}/{full_version}/{installer_name}");
+    let installer_path = mc_dir.join("caches").join("installers").join(&installer_name);
+
+    emit_status(app, "forge", "Downloading Forge installer", 0, 2);
+    download_file(client, &installer_url, &installer_path).await?;
+
+    emit_status(app, "forge", "Running Forge installer", 1, 2);
+    let java = ensure_java(app.clone(), None, None, Some(mc_version.to_string())).await?;
+    let output = Command::new(&java)
+        .arg("-jar")
+        .arg(&installer_path)
+        .arg("--installClient")
+        .current_dir(mc_dir)
+        .output()
+        .map_err(|e| format!("Failed to run Forge installer with {java}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "Forge installer failed for Minecraft {mc_version} / Forge {forge_loader_version}.\n{stderr}\n{stdout}"
+        ));
+    }
+
+    let expected = mc_dir.join("versions").join(&profile_id).join(format!("{profile_id}.json"));
+    if expected.exists() {
+        append_launcher_log("info", "install", &format!("Installed Forge profile: {profile_id}"));
+        return Ok(profile_id);
+    }
+
+    let alternate = mc_dir.join("versions").join(&full_version).join(format!("{full_version}.json"));
+    if alternate.exists() {
+        append_launcher_log("info", "install", &format!("Installed Forge profile: {full_version}"));
+        return Ok(full_version);
+    }
+
+    Err(format!("Forge installer finished but no version profile was found for {profile_id}"))
 }
 
 async fn install_vanilla(

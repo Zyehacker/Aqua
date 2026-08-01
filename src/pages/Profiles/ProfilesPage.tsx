@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { Check, Plus, Shield, UserRound } from 'lucide-react'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
-import { useToast } from '../../components/ToastProvider'
+import { useToast } from '../../hooks/useToast'
 import { PROFILES } from '../../data/mock'
 import { cn } from '../../utils/cn'
 

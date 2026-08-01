@@ -436,7 +436,12 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         }
     };
 
-    let game_dir = instance_dir(&mc_dir, &effective_version);
+    let game_profile_id = settings
+        .instance_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(&effective_version);
+    let game_dir = instance_dir(&mc_dir, game_profile_id);
     let _ = std::fs::create_dir_all(game_dir.join("mods"));
     let _ = std::fs::create_dir_all(game_dir.join("resourcepacks"));
     let _ = std::fs::create_dir_all(game_dir.join("shaderpacks"));

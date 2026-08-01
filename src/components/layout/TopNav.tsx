@@ -15,9 +15,12 @@ import {
   Download,
   Sparkles,
   Settings2,
+  Minus,
+  Square,
+  type LucideIcon,
 } from 'lucide-react'
 
-const ICON_MAP: Record<string, any> = {
+const ICON_MAP: Record<string, LucideIcon> = {
   '/': Waves,
   '/instances': Server,
   '/content': FolderOpen,
@@ -30,7 +33,8 @@ import { NAV_ITEMS, CURRENT_PROFILE } from '../../data/mock'
 import { appActions, useAppStore } from '../../stores/appStore'
 import { cn } from '../../utils/cn'
 import Button from '../ui/Button'
-import { useToast } from '../ToastProvider'
+import { useToast } from '../../hooks/useToast'
+import { microsoftLogin, windowControls } from '../../utils/tauri'
 
 export default function TopNav() {
   const theme = useAppStore((s) => s.theme)
@@ -179,8 +183,15 @@ export default function TopNav() {
                 <p className="small muted">Signed in</p>
                 <strong style={{ color: 'var(--text-strong)' }}>{CURRENT_PROFILE.username}</strong>
                 <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-                  <Button variant="ghost" size="sm" onClick={() => toast.pushToast('Account settings opened', 'info')}>
-                    Manage account
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={async () => {
+                      const result = await microsoftLogin()
+                      toast.pushToast(result ? 'Microsoft account connected' : 'Microsoft login is available in the desktop app', result ? 'success' : 'info')
+                    }}
+                  >
+                    Microsoft login
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => toast.pushToast('Signed out of Aqua Client', 'info')}>
                     Sign out
@@ -189,6 +200,17 @@ export default function TopNav() {
               </motion.div>
             ) : null}
           </AnimatePresence>
+        </div>
+        <div className="window-controls" aria-label="Window controls">
+          <Button variant="ghost" size="icon" aria-label="Minimize window" onClick={() => windowControls.minimize()}>
+            <Minus size={16} />
+          </Button>
+          <Button variant="ghost" size="icon" aria-label="Maximize window" onClick={() => windowControls.toggleMaximize()}>
+            <Square size={14} />
+          </Button>
+          <Button variant="ghost" size="icon" aria-label="Close window" onClick={() => windowControls.close()}>
+            <X size={16} />
+          </Button>
         </div>
       </div>
 

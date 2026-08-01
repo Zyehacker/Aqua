@@ -14,6 +14,8 @@ pub struct Settings {
     pub java_path: Option<String>,
     pub java_runtime: Option<String>,
     pub mc_dir: Option<String>,
+    #[serde(default)]
+    pub instance_id: Option<String>,
     pub ram_mb: u32,
     pub jvm_args: String,
     pub show_snapshots: bool,
@@ -47,6 +49,7 @@ impl Default for Settings {
             java_path: None,
             java_runtime: None,
             mc_dir: None,
+            instance_id: None,
             ram_mb: 2048,
             jvm_args: "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+DisableExplicitGC".into(),
             show_snapshots: false,

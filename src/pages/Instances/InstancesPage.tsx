@@ -1,11 +1,11 @@
-import React, { useCallback } from 'react'
+import { useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, FolderOpen, Play, Plus, Trash2 } from 'lucide-react'
 import Button from '../../components/ui/Button'
 import * as tauri from '../../utils/tauri'
 import Card from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
-import { useToast } from '../../components/ToastProvider'
+import { useToast } from '../../hooks/useToast'
 import { INSTANCES } from '../../data/mock'
 
 export default function InstancesPage() {

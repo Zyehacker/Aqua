@@ -5,7 +5,7 @@ import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
 import ProgressBar from '../../components/ui/ProgressBar'
 import { EmptyState } from '../../components/ui/EmptyState'
-import { useToast } from '../../components/ToastProvider'
+import { useToast } from '../../hooks/useToast'
 import { DOWNLOADS } from '../../data/mock'
 import type { DownloadJob } from '../../types'
 

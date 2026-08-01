@@ -1,15 +1,10 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react'
 import type { ToastVariant } from '../types'
+import { ToastContext } from './toastContext'
 
 type Toast = { id: string; message: string; variant: ToastVariant }
-
-type ToastContextValue = {
-  pushToast: (message: string, variant?: ToastVariant) => void
-}
-
-const ToastContext = createContext<ToastContextValue | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -70,12 +65,4 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   )
-}
-
-export function useToast() {
-  const context = useContext(ToastContext)
-  if (!context) {
-    throw new Error('useToast must be used within ToastProvider')
-  }
-  return context
 }

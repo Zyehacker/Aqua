@@ -3,7 +3,7 @@ import { HardDrive, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-reac
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
 import Toggle from '../../components/ui/Toggle'
-import { useToast } from '../../components/ToastProvider'
+import { useToast } from '../../hooks/useToast'
 import { appActions, useAppStore } from '../../stores/appStore'
 
 export default function SettingsPage() {

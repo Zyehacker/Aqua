@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use crate::launch::LaunchState;
 use crate::settings::{ensure_launcher_layout, get_settings, save_settings};
-use tauri::WindowEvent;
+use tauri::{Manager, WindowEvent};
 
 fn main() {
     // ensure directory layout exists early
@@ -84,6 +84,7 @@ fn main() {
             settings::get_default_mc_dir,
             settings::list_versions,
             settings::generate_optimal_args,
+            java::ensure_java,
             launch::launch_minecraft,
             launch::is_running,
             auth::msa_login,
@@ -92,6 +93,7 @@ fn main() {
             auth::get_account,
             install::list_remote_versions,
             install::list_fabric_loaders,
+            install::list_forge_loaders,
             install::install_version,
             richpresence::start_rich_presence,
             richpresence::stop_rich_presence,
@@ -101,6 +103,11 @@ fn main() {
             mods::list_instances,
             mods::list_mods,
             mods::create_instance,
+            mods::update_instance,
+            mods::duplicate_instance,
+            mods::delete_instance,
+            mods::open_instance_folder,
+            mods::mark_instance_played,
             mods::add_mod,
             mods::delete_mod,
             mods::toggle_mod,
