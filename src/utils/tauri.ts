@@ -136,6 +136,10 @@ export async function getDefaultMcDir() {
   return invoke<string>('get_default_mc_dir')
 }
 
+export async function readLogs() {
+  return invoke<string>('read_logs')
+}
+
 export async function listVersions(mcDir?: string | null) {
   return invoke<string[]>('list_versions', { mcDir })
 }
