@@ -1,243 +1,119 @@
-import { motion } from 'framer-motion'
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Cpu,
-  Download,
-  HardDrive,
-  LoaderCircle,
-  LogIn,
-  PackageCheck,
-  Play,
-  RefreshCw,
-  Sparkles,
-  Wand2,
-} from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { AlertTriangle, FolderOpen, LoaderCircle, Play, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import Button from '../../components/ui/Button'
-import ProgressBar from '../../components/ui/ProgressBar'
 import Skeleton from '../../components/ui/Skeleton'
-import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
-import { useLauncherData, type LoaderKind } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherData'
+import { formatInstanceHeading } from '../../utils/instanceDisplay'
 import * as tauri from '../../utils/tauri'
 
-const loaderCards: Array<{
-  id: LoaderKind
-  title: string
-  copy: string
-  state: 'ready' | 'partial' | 'blocked'
-}> = [
-  { id: 'fabric', title: 'Fabric', copy: 'Auto-selects a compatible stable loader from Fabric Meta.', state: 'ready' },
-  { id: 'vanilla', title: 'Vanilla', copy: 'Installs official Minecraft manifests, libraries, assets, and natives.', state: 'ready' },
-  { id: 'forge', title: 'Forge', copy: 'Backend installer command is not available yet.', state: 'blocked' },
-  { id: 'neoforge', title: 'NeoForge', copy: 'Backend installer command is not available yet.', state: 'blocked' },
-  { id: 'quilt', title: 'Quilt', copy: 'Backend installer command is not available yet.', state: 'blocked' },
-]
+function instanceStatus(instance: tauri.BackendInstance) {
+  const state = instance.install_state?.trim().toLowerCase() ?? ''
+  if (state === 'installed' || state === 'ready') return 'Ready'
+  if (state.includes('download')) return 'Downloading'
+  if (state.includes('install')) return 'Installing'
+  if (state.includes('fail') || state.includes('error')) return 'Failed'
+  return 'Not installed'
+}
 
 export default function HomePage() {
   const toast = useToast()
-  const {
-    settings,
-    instances,
-    versions,
-    jvm,
-    javaPath,
-    loading,
-    error,
-    busy,
-    activeInstanceId,
-    refresh,
-    install,
-    detectJava,
-  } = useLauncherData()
+  const { instances, versions, settings, loading, error, busy, activeInstanceId, selectInstance, refresh, detectJava } = useLauncherData()
+  const [importing, setImporting] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [launchMessage, setLaunchMessage] = useState<string | null>(null)
+  const selectedInstance = instances.find((item) => item.id === activeInstanceId) ?? instances[0] ?? null
+  const isEmpty = !loading && instances.length === 0
+  const instanceName = selectedInstance ? formatInstanceHeading(selectedInstance) : null
+  const versionLabel = selectedInstance
+    ? `${selectedInstance.mc_version}${selectedInstance.loader && selectedInstance.loader !== 'vanilla' ? ` · ${selectedInstance.loader}` : ''}`
+    : versions[0]?.id ?? ''
+  const status = loading ? 'Loading...' : selectedInstance ? instanceStatus(selectedInstance) : ''
+  const javaReady = Boolean(selectedInstance?.java_path || settings?.java_path || settings?.java_runtime)
 
-  const currentVersion = versions[0]?.id ?? settings?.version ?? '1.21.11'
-  const selectedInstance = instances.find((item) => item.id === activeInstanceId)
-  const isFirstRun = !loading && instances.length === 0
-  const playDisabled = loading || Boolean(busy) || !settings
+  useEffect(() => {
+    let cancelled = false
+    const refreshRunning = async () => {
+      const next = await tauri.isMinecraftRunning().catch(() => false)
+      if (!cancelled) setRunning(next)
+    }
+    void refreshRunning()
+    const timer = window.setInterval(() => void refreshRunning(), 1500)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [])
 
-  async function launch() {
-    toast.pushToast(`Starting ${activeInstanceId}...`, 'info')
-    const result = await tauri.launchInstance(selectedInstance?.id ?? activeInstanceId)
-    toast.pushToast(result === null ? 'Launch requires the desktop backend.' : 'Minecraft launch started.', result === null ? 'info' : 'success')
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null
+    void tauri.listen<{ phase?: string; message?: string; error?: string; code?: number }>('launch-status', (event) => {
+      const message = event.message || event.error
+      if (message) setLaunchMessage(message)
+      if (event.phase === 'error') toast.pushToast(message || 'Minecraft launch failed.', 'error')
+      if (event.phase === 'exited' && event.message) toast.pushToast(event.message, event.code === 0 ? 'info' : 'error')
+    }).then((cleanup) => { unsubscribe = cleanup })
+    return () => unsubscribe?.()
+  }, [toast])
+
+  async function importInstance() {
+    setImporting(true)
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const packagePath = await open({ filters: [{ name: 'Aqua Instance', extensions: ['aquainst'] }], multiple: false, directory: false })
+      if (!packagePath || Array.isArray(packagePath)) return
+      await tauri.importInstance(packagePath, settings?.mc_dir)
+      await refresh()
+      toast.pushToast('Instance imported', 'success')
+    } catch (error) {
+      toast.pushToast(error instanceof Error ? error.message : 'Import failed.', 'error')
+    } finally {
+      setImporting(false)
+    }
   }
 
-  async function runInstall(loader: LoaderKind) {
-    const result = await install(loader, currentVersion)
-    toast.pushToast(result ? `Installed ${result}` : 'Installer did not complete.', result ? 'success' : 'error')
+  async function launch() {
+    if (!selectedInstance) return
+    toast.pushToast(`Launching ${instanceName}...`, 'info')
+    try {
+      await tauri.launchInstance(selectedInstance)
+      toast.pushToast('Launch started.', 'success')
+    } catch (err) {
+      toast.pushToast(err instanceof Error ? err.message : 'Launch failed.', 'error')
+    }
   }
 
   async function runJavaCheck() {
     const result = await detectJava()
-    toast.pushToast(result ? 'Java runtime ready.' : 'Java check did not complete.', result ? 'success' : 'error')
+    toast.pushToast(result ? 'Java ready' : 'Java not detected. Check Settings > Java.', result ? 'success' : 'error')
   }
 
   return (
-    <div className="page launcher-page">
-      <motion.section
-        className="launcher-hero"
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.28 }}
-      >
-        <div className="launcher-hero__copy">
-          <p className="eyebrow">Aqua Client</p>
-          <h1>{isFirstRun ? 'Build your first playable profile.' : selectedInstance?.id ?? settings?.version ?? 'Ready to play'}</h1>
-          <p>
-            {isFirstRun
-              ? 'Aqua will install Minecraft, resolve Java, apply JVM recommendations, and keep profile files isolated.'
-              : 'A fast, focused launcher surface for launching, installing loaders, and keeping your setup healthy.'}
-          </p>
-          <div className="launcher-hero__actions">
-            <Button className="launcher-play" variant="aqua" size="lg" disabled={playDisabled} onClick={launch}>
-              {busy ? <LoaderCircle size={24} className="spin" /> : <Play size={24} />}
-              Play
-            </Button>
-            <Button variant="ghost" size="lg" disabled={busy === 'java'} onClick={runJavaCheck}>
-              {busy === 'java' ? <LoaderCircle size={18} className="spin" /> : <Wand2 size={18} />}
-              Auto setup
-            </Button>
-          </div>
-        </div>
-
-        <div className="launcher-hero__panel">
+    <div className="home-page">
+      <section className="home-hero" aria-label="Quick launch">
+        <div className="home-hero__content">
           {loading ? (
-            <>
-              <Skeleton style={{ height: 18, width: '58%' }} />
-              <Skeleton style={{ height: 42, width: '100%', marginTop: 16 }} />
-              <Skeleton style={{ height: 42, width: '78%', marginTop: 12 }} />
-            </>
+            <div className="home-hero__loading"><Skeleton style={{ height: 20, width: 100, marginBottom: 10 }} /><Skeleton style={{ height: 64, width: 360, marginBottom: 14 }} /><Skeleton style={{ height: 16, width: 180 }} /></div>
+          ) : isEmpty ? (
+            <div className="home-hero__empty"><p className="home-hero__eyebrow">Aqua Client</p><h1>No instances yet</h1><p>Create an instance to start playing.</p><Link to="/instances" className="btn btn-aqua btn-lg home-hero__launch"><Plus size={18} />Create instance</Link></div>
           ) : (
-            <>
-              <div className="setup-step complete">
-                <CheckCircle2 size={18} />
-                <div>
-                  <strong>Minecraft {currentVersion}</strong>
-                  <span>{versions.length} release versions available</span>
-                </div>
-              </div>
-              <div className={`setup-step ${javaPath || settings?.java_path ? 'complete' : 'waiting'}`}>
-                <Cpu size={18} />
-                <div>
-                  <strong>{javaPath || settings?.java_path ? 'Java detected' : 'Java will be installed if needed'}</strong>
-                  <span>{javaPath ?? settings?.java_path ?? 'Temurin 21 fallback enabled'}</span>
-                </div>
-              </div>
-              <div className="setup-step complete">
-                <HardDrive size={18} />
-                <div>
-                  <strong>{jvm ? `${Math.round(jvm.recommended_ram_mb / 1024)} GB recommended` : `${settings?.ram_mb ?? 2048} MB allocated`}</strong>
-                  <span>{jvm ? `${jvm.memory_mb} MB system memory, ${jvm.cores} CPU threads` : 'Using saved JVM settings'}</span>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </motion.section>
-
-      {error ? (
-        <div className="state-banner error">
-          <AlertTriangle size={18} />
-          <span>{error}</span>
-          <Button variant="ghost" size="sm" onClick={refresh}>
-            <RefreshCw size={14} />
-            Retry
-          </Button>
-        </div>
-      ) : null}
-
-      <section className="launcher-grid">
-        <div className="launcher-section">
-          <div className="section-header">
-            <div>
-              <h2>Loader Installer</h2>
-              <p className="small muted">Real backend support, no pretend installs.</p>
-            </div>
-            <span className="chip chip-aqua">{currentVersion}</span>
-          </div>
-          <div className="loader-grid">
-            {loaderCards.map((loader) => {
-              const installing = busy === `install-${loader.id}`
-              return (
-                <motion.button
-                  key={loader.id}
-                  type="button"
-                  className={`loader-tile ${loader.state}`}
-                  whileHover={{ y: -3 }}
-                  whileTap={{ scale: 0.985 }}
-                  disabled={loader.state === 'blocked' || Boolean(busy)}
-                  onClick={() => runInstall(loader.id)}
-                >
-                  <span className="loader-tile__icon">
-                    {installing ? <LoaderCircle size={20} className="spin" /> : loader.state === 'ready' ? <Download size={20} /> : <PackageCheck size={20} />}
-                  </span>
-                  <strong>{loader.title}</strong>
-                  <span>{loader.copy}</span>
-                </motion.button>
-              )
-            })}
-          </div>
-        </div>
-
-        <div className="launcher-section">
-          <div className="section-header">
-            <div>
-              <h2>Instances</h2>
-              <p className="small muted">Local profiles discovered from Aqua storage.</p>
-            </div>
-            <Button variant="ghost" size="sm" onClick={refresh}>
-              <RefreshCw size={14} />
-              Refresh
-            </Button>
-          </div>
-
-          {loading ? (
-            <div className="instance-list">
-              <Skeleton style={{ height: 72 }} />
-              <Skeleton style={{ height: 72 }} />
-              <Skeleton style={{ height: 72 }} />
-            </div>
-          ) : instances.length === 0 ? (
-            <EmptyState
-              title="No instances installed"
-              description="Install Fabric or Vanilla above to create a playable profile."
-            />
-          ) : (
-            <div className="instance-list">
-              {instances.slice(0, 5).map((instance) => (
-                <button key={instance.id} type="button" className="instance-row" onClick={() => tauri.launchInstance(instance.id)}>
-                  <div>
-                    <strong>{instance.id}</strong>
-                    <span>
-                      {instance.mod_count} mods · {instance.pack_count} packs · {instance.shader_count} shaders
-                    </span>
-                  </div>
-                  <Play size={17} />
-                </button>
-              ))}
+            <div className="home-hero__instance">
+              <p className="home-hero__eyebrow">Current instance</p>
+              <h1 className="home-hero__name">{instanceName}</h1>
+              <div className="home-hero__meta"><span>{versionLabel}</span><span className={status === 'Ready' ? 'home-hero__status-ready' : ''}>{status}</span>{selectedInstance?.loader_version ? <span>{selectedInstance.loader_version}</span> : null}</div>
+              <div className="home-hero__actions">{running ? <button type="button" className="btn btn-danger btn-lg home-hero__launch" onClick={() => void tauri.stopMinecraft().catch((err) => toast.pushToast(err instanceof Error ? err.message : 'Unable to stop Minecraft.', 'error'))}>Stop</button> : <button type="button" className="btn btn-aqua btn-lg home-hero__launch" disabled={Boolean(busy) || !javaReady} onClick={() => void launch()}>{busy ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}Launch</button>}<Link to="/instances" className="btn btn-ghost"><Settings2 size={16} />Instance settings</Link>{running ? <Link to="/logs" className="btn btn-ghost">View logs</Link> : null}</div>
+              <p className="home-hero__note">{launchMessage || `${selectedInstance.mod_count} mods · ${selectedInstance.pack_count} resource packs · ${selectedInstance.last_played_at ? `Last played ${new Date(selectedInstance.last_played_at * 1000).toLocaleDateString()}` : 'Not played yet'}${!javaReady ? ' · Java required' : ''}`}</p>
             </div>
           )}
         </div>
       </section>
 
-      {isFirstRun ? (
-        <motion.section className="first-run" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-          <Sparkles size={18} />
-          <div>
-            <strong>First-run setup</strong>
-            <span>Run Auto setup, then install Fabric or Vanilla. Microsoft login is available from the account menu.</span>
-          </div>
-          <Button variant="ghost" size="sm" onClick={() => tauri.microsoftLogin()}>
-            <LogIn size={14} />
-            Sign in
-          </Button>
-        </motion.section>
-      ) : null}
+      {error ? <div className="state-banner state-banner--error" role="alert"><AlertTriangle size={15} /><span>{error}</span><Button variant="ghost" size="sm" onClick={refresh}><RefreshCw size={13} />Retry</Button></div> : null}
 
-      <section className="launcher-health">
-        <ProgressBar value={javaPath || settings?.java_path ? 100 : 48} label="Runtime readiness" showValue accent="aqua" />
-        <ProgressBar value={instances.length > 0 ? 100 : 25} label="Profile readiness" showValue />
+      <section className="home-library" aria-labelledby="home-library-title">
+        <div className="home-library__header"><div><p className="eyebrow">Your library</p><h2 id="home-library-title">Instances</h2></div><div className="home-library__actions"><button type="button" className="btn btn-ghost btn-sm" disabled={importing} onClick={() => void importInstance()}><FolderOpen size={14} />Import</button><Link to="/instances" className="btn btn-ghost btn-sm">Manage</Link></div></div>
+        {!instances.length ? <p className="home-empty-copy">Create your first Minecraft instance.</p> : <div className="home-instance-grid">{instances.slice(0, 4).map((instance, index) => { const itemStatus = instanceStatus(instance); const cardStyle = { '--card-index': index } as CSSProperties; return <article key={instance.id} className={`home-instance-card ${instance.id === selectedInstance?.id ? 'active' : ''}`} style={cardStyle}><button type="button" className="home-instance-card__select" onClick={() => void selectInstance(instance.id)}><span className="home-instance-card__art" /><span className="home-instance-card__body"><strong>{formatInstanceHeading(instance)}</strong><span>{instance.mc_version} · {instance.loader || 'Vanilla'}</span><small>{itemStatus}</small></span></button><button type="button" className="home-instance-card__play" aria-label={`Launch ${formatInstanceHeading(instance)}`} onClick={() => { void selectInstance(instance.id); void tauri.launchInstance(instance) }}><Play size={14} /></button></article> })}</div>}
       </section>
+
+      <div className="home-footer-actions"><button type="button" className="btn btn-ghost btn-sm" onClick={() => void runJavaCheck()}><Settings2 size={14} />Check Java</button><Link to="/content" className="btn btn-ghost btn-sm">Browse content</Link></div>
     </div>
   )
 }

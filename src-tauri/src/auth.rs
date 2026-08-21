@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
+use crate::settings::atomic_write;
 use tokio::sync::oneshot;
 use base64::engine::general_purpose;
 use base64::Engine as _;
@@ -39,7 +40,7 @@ fn account_path(app: &AppHandle) -> PathBuf {
 fn save_account_file(app: &AppHandle, acc: &MsaAccount) -> Result<(), String> {
     let path = account_path(app);
     let data = serde_json::to_string_pretty(acc).map_err(|e| e.to_string())?;
-    std::fs::write(&path, data).map_err(|e| e.to_string())
+    atomic_write(&path, data.as_bytes())
 }
 
 pub fn load_account_file(app: &AppHandle) -> Option<MsaAccount> {
@@ -290,8 +291,33 @@ pub async fn msa_logout(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_account(app: AppHandle) -> Option<MsaAccount> {
-    load_account_file(&app)
+pub async fn get_account(app: AppHandle) -> Option<MsaAccount> {
+    let account = load_account_file(&app)?;
+    // Restore a valid session before the UI receives it. Returning an expired
+    // account leaves the launcher looking signed in while launch later fails.
+    if account.expires_at > now_unix() + 60 {
+        return Some(account);
+    }
+
+    // Keep the persisted identity visible during temporary network outages.
+    // A later authenticated operation can refresh the token when connectivity
+    // returns; startup must not turn a transient refresh failure into logout.
+    if account.refresh_token.trim().is_empty() {
+        return Some(account);
+    }
+
+    let client = reqwest::Client::new();
+    match full_auth_from_refresh(&client, &account.refresh_token).await {
+        Ok(refreshed) => {
+            if save_account_file(&app, &refreshed).is_ok() {
+                let _ = app.emit("auth-changed", &refreshed);
+                Some(refreshed)
+            } else {
+                None
+            }
+        }
+        Err(_) => Some(account),
+    }
 }
 
 #[derive(Serialize, Deserialize)]

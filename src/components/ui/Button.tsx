@@ -1,6 +1,8 @@
 import { motion, type HTMLMotionProps } from 'framer-motion'
-import { type ReactNode, memo } from 'react'
+import { type MouseEvent, type ReactNode, memo } from 'react'
 import { cn } from '../../utils/cn'
+import { playUiSound } from '../../utils/uiSound'
+import { useAppStore } from '../../stores/appStore'
 
 type Variant = 'primary' | 'aqua' | 'ghost' | 'danger'
 
@@ -24,8 +26,19 @@ function Button({
   block = false,
   className,
   children,
+  onClick,
   ...rest
 }: ButtonProps) {
+  const uiSounds = useAppStore((s) => s.uiSounds)
+  const soundVolume = useAppStore((s) => s.soundVolume)
+
+  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
+    onClick?.(event)
+    if (uiSounds && !event.defaultPrevented) {
+      playUiSound(variant === 'ghost' ? 'nav' : 'primary', soundVolume)
+    }
+  }
+
   return (
     <motion.button
       whileHover={{ y: -2 }}
@@ -40,9 +53,9 @@ function Button({
         block && 'btn-block',
         className,
       )}
+      onClick={handleClick}
       {...rest}
     >
-      {/* ensure SVG icons inside buttons adopt consistent sizing */}
       {typeof children === 'string' ? children : (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
           {children}

@@ -1,0 +1,4 @@
+{
+  "nav.home": "Главная", "nav.instances": "Сборки", "nav.content": "Контент", "nav.downloads": "Загрузки", "nav.settings": "Настройки",
+  "common.launch": "Запустить", "common.save": "Сохранить", "common.cancel": "Отмена", "common.delete": "Удалить", "settings.language": "Язык", "settings.languageDescription": "Выберите язык интерфейса Aqua", "settings.saved": "Настройки сохранены", "discord.join": "Наш Discord", "account.notSignedIn": "Не выполнен вход", "account.signedIn": "Выполнен вход", "instance.ready": "Готово", "instance.installing": "Установка", "instance.needsAttention": "Требует внимания", "content.noResults": "Нет результатов", "content.noCompatible": "Нет совместимых версий для этой сборки", "content.unableToReach": "Не удалось подключиться к Modrinth"
+}

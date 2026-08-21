@@ -10,6 +10,7 @@ mod java;
 mod mod_browser;
 mod update;
 mod richpresence;
+mod portable;
 
 use std::sync::Mutex;
 
@@ -23,8 +24,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            update::start_updater_and_network_tracker(app.handle().clone());
+            update::start_updater_check_loop(app.handle().clone());
             // Restore window size/position/maximized from persisted settings (best-effort)
             let handle = app.handle();
             let win_opt = app.get_webview_window("main");
@@ -33,11 +36,18 @@ fn main() {
                 let s = get_settings(handle.clone());
                 // Restore size if available
                 if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
-                    let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w as f64, height: h as f64 }));
+                    if (400..=10000).contains(&w) && (300..=10000).contains(&h) {
+                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w as f64, height: h as f64 }));
+                    }
                 }
                 // Restore position if available
                 if let (Some(x), Some(y)) = (s.window_x, s.window_y) {
-                    let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: x as f64, y: y as f64 }));
+                    // Windows can persist the sentinel off-screen position used
+                    // for minimized/hidden windows. Never restore that as the
+                    // main window location.
+                    if x > -10000 && y > -10000 {
+                        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: x as f64, y: y as f64 }));
+                    }
                 }
                 // Restore maximized state
                 if s.window_maximized.unwrap_or(false) {
@@ -77,6 +87,7 @@ fn main() {
         })
         .manage(LaunchState {
             running: Mutex::new(false),
+            child_pid: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
@@ -84,9 +95,12 @@ fn main() {
             settings::get_default_mc_dir,
             settings::list_versions,
             settings::generate_optimal_args,
+            settings::read_logs,
             java::ensure_java,
+            java::list_java_runtimes,
             launch::launch_minecraft,
             launch::is_running,
+            launch::stop_minecraft,
             auth::msa_login,
             auth::msa_logout,
             auth::get_account_textures,
@@ -101,6 +115,8 @@ fn main() {
             richpresence::set_singleplayer_presence,
             richpresence::set_multiplayer_presence,
             mods::list_instances,
+            mods::storage_integrity_check,
+            mods::get_instance,
             mods::list_mods,
             mods::create_instance,
             mods::update_instance,
@@ -120,12 +136,16 @@ fn main() {
             mods::rename_instance,
             mods::save_instance_icon,
             mods::read_instance_icon,
+            portable::export_instance,
+            portable::import_instance,
             download_manager::add_download,
             download_manager::pause_download,
             download_manager::resume_download,
             download_manager::cancel_download,
             download_manager::list_downloads,
-            update::download_update,
+            update::check_for_update,
+            update::install_update,
+            update::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aqua Client");

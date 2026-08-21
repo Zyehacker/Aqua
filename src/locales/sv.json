@@ -1,0 +1,4 @@
+{
+  "nav.home": "Hem", "nav.instances": "Instanser", "nav.content": "Innehåll", "nav.downloads": "Nedladdningar", "nav.settings": "Inställningar",
+  "common.launch": "Starta", "common.save": "Spara", "common.cancel": "Avbryt", "common.delete": "Ta bort", "settings.language": "Språk", "settings.languageDescription": "Välj språk för Aguas gränssnitt", "settings.saved": "Inställningar sparade", "discord.join": "Gå med i vår Discord", "account.notSignedIn": "Inte inloggad", "account.signedIn": "Inloggad", "instance.ready": "Klar", "instance.installing": "Installerar", "instance.needsAttention": "Åtgärd krävs", "content.noResults": "Inga resultat", "content.noCompatible": "Inga kompatibla versioner för denna instans", "content.unableToReach": "Kunde inte nå Modrinth"
+}

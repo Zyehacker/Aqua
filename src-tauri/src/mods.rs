@@ -1,12 +1,14 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose, Engine};
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{default_mc_dir, instance_dir};
-use tauri::AppHandle;
+use crate::settings::{append_launcher_log, atomic_write, default_mc_dir, instance_dir};
+use tauri::{AppHandle, Emitter};
 use crate::install::install_version as install_version_cmd;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -18,13 +20,36 @@ pub struct ModInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StorageIssue {
+    pub kind: String,
+    pub path: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StorageIntegrityReport {
+    pub healthy: bool,
+    pub issues: Vec<StorageIssue>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InstanceInfo {
     pub id: String,
     pub name: String,
     pub mc_version: String,
     pub loader: String,
     pub loader_version: Option<String>,
+    pub loader_mode: String,
     pub installed_version_id: String,
+    pub game_dir: Option<String>,
+    pub java_path: Option<String>,
+    #[serde(default)]
+    pub java_runtime: Option<String>,
+    #[serde(default)]
+    pub java_version: Option<String>,
+    pub memory_mb: Option<u32>,
+    pub java_args: Option<String>,
+    pub install_state: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
     pub last_played_at: Option<u64>,
@@ -34,13 +59,24 @@ pub struct InstanceInfo {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-struct InstanceMetadata {
+pub(crate) struct InstanceMetadata {
     pub id: String,
     pub name: String,
     pub mc_version: String,
     pub loader: String,
     pub loader_version: Option<String>,
+    #[serde(default = "default_loader_mode")]
+    pub loader_mode: String,
     pub installed_version_id: String,
+    pub game_dir: Option<String>,
+    pub java_path: Option<String>,
+    #[serde(default)]
+    pub java_runtime: Option<String>,
+    #[serde(default)]
+    pub java_version: Option<String>,
+    pub memory_mb: Option<u32>,
+    pub java_args: Option<String>,
+    pub install_state: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
     pub last_played_at: Option<u64>,
@@ -52,6 +88,30 @@ pub struct InstanceUpdate {
     pub mc_version: Option<String>,
     pub loader: Option<String>,
     pub loader_version: Option<String>,
+    pub loader_mode: Option<String>,
+    pub game_dir: Option<String>,
+    pub java_path: Option<String>,
+    pub java_runtime: Option<String>,
+    pub java_version: Option<String>,
+    pub memory_mb: Option<u32>,
+    pub java_args: Option<String>,
+    pub install_state: Option<String>,
+}
+
+fn default_loader_mode() -> String {
+    "manual".to_string()
+}
+
+fn emit_provisioning(app: &AppHandle, instance_id: &str, stage: &str, state: &str, message: &str) {
+    let _ = app.emit(
+        "instance-provisioning",
+        serde_json::json!({
+            "instance_id": instance_id,
+            "stage": stage,
+            "state": state,
+            "message": message,
+        }),
+    );
 }
 
 fn aqua_root(mc_dir: Option<String>) -> Result<PathBuf, String> {
@@ -63,40 +123,42 @@ fn aqua_root(mc_dir: Option<String>) -> Result<PathBuf, String> {
 
 fn category_folder(category: &str) -> &'static str {
     match category {
-        "texturepacks" => "resourcepacks",
+        "resource-packs" | "resourcepacks" | "texturepacks" => "resourcepacks",
+        "data-packs" | "datapacks" => "datapacks",
         "shaders" => "shaderpacks",
         _ => "mods",
     }
 }
 
 fn category_dir(root: &Path, profile_id: &str, category: &str) -> PathBuf {
-    instance_dir(root, profile_id).join(category_folder(category))
+    let content_root = read_metadata(root, profile_id)
+        .and_then(|metadata| metadata.game_dir.map(PathBuf::from))
+        .unwrap_or_else(|| instance_dir(root, profile_id));
+    content_root.join(category_folder(category))
 }
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn safe_id(input: &str) -> Result<String, String> {
-    let id = input
-        .trim()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else if c.is_whitespace() {
-                '-'
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches(['-', '_', '.'])
-        .to_string();
-    if id.is_empty() {
+fn validate_instance_name(input: &str) -> Result<String, String> {
+    let name = input.trim().to_string();
+    if name.is_empty() {
         Err("Instance name must contain at least one valid character.".to_string())
     } else {
-        Ok(id)
+        Ok(name)
+    }
+}
+
+static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn new_instance_id(root: &Path) -> String {
+    loop {
+        let sequence = INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let id = format!("instance-{}-{}", now_secs(), sequence);
+        if !instance_dir(root, &id).exists() && !metadata_path(root, &id).exists() {
+            return id;
+        }
     }
 }
 
@@ -104,17 +166,81 @@ fn metadata_path(root: &Path, instance_id: &str) -> PathBuf {
     instance_dir(root, instance_id).join("instance.json")
 }
 
-fn read_metadata(root: &Path, instance_id: &str) -> Option<InstanceMetadata> {
+#[tauri::command]
+pub fn storage_integrity_check(mc_dir: Option<String>) -> Result<StorageIntegrityReport, String> {
+    let root = aqua_root(mc_dir)?;
+    let mut issues = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for profiles in [root.join("aqua_blobs").join("profiles"), root.join("profiles"), root.join("instances")] {
+        let Ok(entries) = std::fs::read_dir(&profiles) else { continue };
+        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            let directory_id = entry.file_name().to_string_lossy().to_string();
+            let path = entry.path().join("instance.json");
+            if !seen_ids.insert(directory_id.clone()) {
+                issues.push(StorageIssue { kind: "duplicate_instance".into(), path: entry.path().display().to_string(), message: format!("Instance ID appears in multiple storage layouts: {directory_id}") });
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                issues.push(StorageIssue { kind: "missing_metadata".into(), path: path.display().to_string(), message: "instance.json is missing or unreadable".into() });
+                continue;
+            };
+            let Ok(metadata) = serde_json::from_str::<InstanceMetadata>(&raw) else {
+                issues.push(StorageIssue { kind: "corrupt_metadata".into(), path: path.display().to_string(), message: "instance.json is not valid Aqua metadata".into() });
+                continue;
+            };
+            if metadata.id != directory_id { issues.push(StorageIssue { kind: "id_mismatch".into(), path: path.display().to_string(), message: format!("Metadata ID '{}' does not match directory '{directory_id}'", metadata.id) }); }
+            if metadata.name.trim().is_empty() || metadata.mc_version.trim().is_empty() { issues.push(StorageIssue { kind: "incomplete_metadata".into(), path: path.display().to_string(), message: "Instance name and Minecraft version are required".into() }); }
+            if !matches!(metadata.loader.as_str(), "vanilla" | "fabric" | "forge") { issues.push(StorageIssue { kind: "invalid_loader".into(), path: path.display().to_string(), message: format!("Unsupported loader '{}'", metadata.loader) }); }
+            let version_json = root.join("versions").join(&metadata.installed_version_id).join(format!("{}.json", metadata.installed_version_id));
+            if !version_json.exists() { issues.push(StorageIssue { kind: "missing_minecraft_metadata".into(), path: version_json.display().to_string(), message: "Installed version metadata is missing".into() }); }
+            if let Some(game_dir) = metadata.game_dir.as_deref() {
+                if !Path::new(game_dir).exists() { issues.push(StorageIssue { kind: "missing_game_directory".into(), path: game_dir.to_string(), message: "Configured game directory does not exist".into() }); }
+            }
+            if let Ok(version_raw) = std::fs::read_to_string(&version_json) {
+                if let Ok(version) = serde_json::from_str::<serde_json::Value>(&version_raw) {
+                    if let Some(libraries) = version["libraries"].as_array() {
+                        for library in libraries {
+                            if !crate::launch::library_allowed(library) { continue; }
+                            let paths = library["downloads"]["artifact"]["path"].as_str().into_iter()
+                                .chain(library["downloads"]["classifiers"].as_object().into_iter().flat_map(|classifiers| classifiers.values().filter_map(|item| item["path"].as_str())));
+                            for relative in paths {
+                                let full = root.join("libraries").join(relative);
+                                if !full.exists() { issues.push(StorageIssue { kind: "missing_library".into(), path: full.display().to_string(), message: "Required library artifact is missing".into() }); }
+                            }
+                        }
+                    }
+                } else { issues.push(StorageIssue { kind: "corrupt_minecraft_metadata".into(), path: version_json.display().to_string(), message: "Minecraft version metadata is not valid JSON".into() }); }
+            }
+            let mods_dir = entry.path().join("mods");
+            let lockfile = mods_dir.join(".aqua-modrinth.json");
+            if let Ok(lock_raw) = std::fs::read_to_string(&lockfile) {
+                if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&lock_raw) {
+                    let mut projects = std::collections::HashSet::new();
+                    for item in items {
+                        let project = item["project_id"].as_str().unwrap_or("");
+                        let filename = item["filename"].as_str().unwrap_or("");
+                        if !projects.insert(project.to_string()) { issues.push(StorageIssue { kind: "duplicate_mod_project".into(), path: lockfile.display().to_string(), message: format!("Project '{project}' appears more than once") }); }
+                        if filename.is_empty() || !mods_dir.join(filename).exists() { issues.push(StorageIssue { kind: "orphan_lock_entry".into(), path: lockfile.display().to_string(), message: format!("Lock entry references missing file '{filename}'") }); }
+                    }
+                } else { issues.push(StorageIssue { kind: "corrupt_lockfile".into(), path: lockfile.display().to_string(), message: "Modrinth lockfile is not valid JSON".into() }); }
+            }
+        }
+    }
+    Ok(StorageIntegrityReport { healthy: issues.is_empty(), issues })
+}
+
+pub(crate) fn read_metadata(root: &Path, instance_id: &str) -> Option<InstanceMetadata> {
     let path = metadata_path(root, instance_id);
     let data = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<InstanceMetadata>(&data).ok()
 }
 
-fn write_metadata(root: &Path, meta: &InstanceMetadata) -> Result<(), String> {
+pub(crate) fn write_metadata(root: &Path, meta: &InstanceMetadata) -> Result<(), String> {
     let dir = instance_dir(root, &meta.id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let data = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("instance.json"), data).map_err(|e| e.to_string())
+    let path = dir.join("instance.json");
+    atomic_write(&path, data.as_bytes())
 }
 
 fn instance_info(root: &Path, meta: InstanceMetadata) -> InstanceInfo {
@@ -127,7 +253,15 @@ fn instance_info(root: &Path, meta: InstanceMetadata) -> InstanceInfo {
         mc_version: meta.mc_version,
         loader: meta.loader,
         loader_version: meta.loader_version,
+        loader_mode: meta.loader_mode,
         installed_version_id: meta.installed_version_id,
+        game_dir: meta.game_dir,
+        java_path: meta.java_path,
+        java_runtime: meta.java_runtime,
+        java_version: meta.java_version,
+        memory_mb: meta.memory_mb,
+        java_args: meta.java_args,
+        install_state: meta.install_state,
         created_at: meta.created_at,
         updated_at: meta.updated_at,
         last_played_at: meta.last_played_at,
@@ -145,6 +279,17 @@ fn has_valid_pack_meta(path: &Path) -> bool {
             n.ends_with(".jar") || n.ends_with(".zip") || n.ends_with(".litemod") || n.ends_with(".disabled")
         })
         .unwrap_or(false)
+}
+
+fn content_filename(filename: &str) -> Result<&str, String> {
+    let path = Path::new(filename);
+    if filename.trim().is_empty()
+        || path.file_name().and_then(|name| name.to_str()) != Some(filename)
+        || path.is_absolute()
+    {
+        return Err(format!("Invalid content filename: {filename}"));
+    }
+    Ok(filename)
 }
 
 fn classify_archive(path: &Path) -> Option<&'static str> {
@@ -214,17 +359,27 @@ fn open_path(p: &Path) -> std::io::Result<()> {
 #[tauri::command]
 pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, String> {
     let root = aqua_root(mc_dir)?;
-    let profiles_dir = root.join("aqua_blobs").join("profiles");
-
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
-        for e in entries.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let id = e.file_name().to_string_lossy().into_owned();
-            if let Some(meta) = read_metadata(&root, &id) {
-                out.push(instance_info(&root, meta));
+    // Support the current KitStorage layout as well as older launcher roots.
+    // `instance_dir` resolves the metadata location, so each entry remains one
+    // canonical instance instead of becoming a second profile system.
+    for profiles_dir in [
+        root.join("aqua_blobs").join("profiles"),
+        root.join("profiles"),
+        root.join("instances"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&profiles_dir) {
+            for e in entries.flatten() {
+                if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let id = e.file_name().to_string_lossy().into_owned();
+                if out.iter().any(|item: &InstanceInfo| item.id == id) {
+                    continue;
+                }
+                if let Some(meta) = read_metadata(&root, &id) {
+                    out.push(instance_info(&root, meta));
+                }
             }
         }
     }
@@ -257,7 +412,15 @@ pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, Strin
                 mc_version: id.clone(),
                 loader: loader.to_string(),
                 loader_version: None,
+                loader_mode: "manual".to_string(),
                 installed_version_id: id,
+                game_dir: None,
+                java_path: None,
+                java_runtime: None,
+                java_version: None,
+                memory_mb: None,
+                java_args: None,
+                install_state: Some("installed".to_string()),
                 created_at: 0,
                 updated_at: 0,
                 last_played_at: None,
@@ -341,7 +504,7 @@ pub fn add_mod(
     let target_dir = instance_dir(&root, &profile_id).join(target_category);
     std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
 
-    let filename = src.file_name().ok_or("invalid filename")?.to_string_lossy().into_owned();
+    let filename = src.file_name().ok_or("Invalid content filename")?.to_string_lossy().into_owned();
     let dest = target_dir.join(&filename);
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
 
@@ -356,6 +519,7 @@ pub fn delete_mod(
     category: String,
 ) -> Result<(), String> {
     let root = aqua_root(mc_dir)?;
+    let filename = content_filename(&filename)?;
     let dir = category_dir(&root, &profile_id, &category);
 
     let candidates = [
@@ -372,7 +536,7 @@ pub fn delete_mod(
     }
 
     if !removed {
-        return Err(format!("Item not found: {filename}"));
+        return Err(format!("Content item was not found: {filename}"));
     }
     Ok(())
 }
@@ -386,17 +550,30 @@ pub fn toggle_mod(
     category: String,
 ) -> Result<(), String> {
     let root = aqua_root(mc_dir)?;
+    let filename = content_filename(&filename)?;
     let dir = category_dir(&root, &profile_id, &category);
 
     let active = dir.join(&filename);
     let disabled = dir.join(format!("{filename}.disabled"));
 
     if enabled {
+        if active.exists() {
+            return Ok(());
+        }
         if disabled.exists() {
-            std::fs::rename(&disabled, &active).map_err(|e| e.to_string())?;
+            std::fs::rename(&disabled, &active).map_err(|e| format!("Unable to enable content '{filename}': {e}"))?;
+        } else {
+            return Err(format!("Content item was not found: {filename}"));
         }
     } else if active.exists() {
-        std::fs::rename(&active, &disabled).map_err(|e| e.to_string())?;
+        if disabled.exists() {
+            return Err(format!("Cannot disable '{filename}': a disabled copy already exists"));
+        }
+        std::fs::rename(&active, &disabled).map_err(|e| format!("Unable to disable content '{filename}': {e}"))?;
+    } else if disabled.exists() {
+        return Ok(());
+    } else {
+        return Err(format!("Content item was not found: {filename}"));
     }
 
     Ok(())
@@ -495,7 +672,13 @@ pub async fn create_instance(
     mc_dir: Option<String>,
 ) -> Result<String, String> {
     let root = aqua_root(mc_dir.clone())?;
-    let id = safe_id(&instance_name)?;
+    let instance_name = validate_instance_name(&instance_name)?;
+    let loader_mode = if fabric_loader_version.as_deref().unwrap_or_default().trim().is_empty() {
+        "automatic".to_string()
+    } else {
+        "manual".to_string()
+    };
+    let id = new_instance_id(&root);
     let inst = instance_dir(&root, &id);
     if metadata_path(&root, &id).exists() {
         return Err(format!("Instance already exists: {id}"));
@@ -505,21 +688,136 @@ pub async fn create_instance(
     std::fs::create_dir_all(inst.join("resourcepacks")).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(inst.join("shaderpacks")).map_err(|e| e.to_string())?;
 
-    // Call the install_version command to install the requested Minecraft version/profile
-    let loader_version = fabric_loader_version.clone();
-    let installed_version_id = install_version_cmd(app, loader.clone(), mc_version.clone(), fabric_loader_version, mc_dir).await?;
-    let ts = now_secs();
+    let created_at = now_secs();
     write_metadata(&root, &InstanceMetadata {
         id: id.clone(),
-        name: instance_name.trim().to_string(),
-        mc_version,
-        loader,
-        loader_version,
-        installed_version_id,
-        created_at: ts,
-        updated_at: ts,
+        name: instance_name.clone(),
+        mc_version: mc_version.clone(),
+        loader: loader.clone(),
+        loader_version: None,
+        loader_mode: loader_mode.clone(),
+        installed_version_id: mc_version.clone(),
+        game_dir: None,
+        java_runtime: None,
+        java_path: None,
+        java_version: None,
+        memory_mb: None,
+        java_args: None,
+        install_state: Some("provisioning".to_string()),
+        created_at,
+        updated_at: created_at,
         last_played_at: None,
     })?;
+    emit_provisioning(&app, &id, "create_directory", "complete", "Instance directory created");
+    emit_provisioning(&app, &id, "resolve_minecraft", "active", &format!("Resolving Minecraft {mc_version}"));
+
+    // Call the install_version command to install the requested Minecraft version/profile
+    // and retrieve the final installed profile ID and resolved loader version.
+    let (installed_version_id, resolved_loader_version) = match install_version_cmd(
+        app.clone(),
+        loader.clone(),
+        mc_version.clone(),
+        fabric_loader_version,
+        mc_dir,
+    ).await {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(mut metadata) = read_metadata(&root, &id) {
+                metadata.install_state = Some("failed".to_string());
+                metadata.updated_at = now_secs();
+                let _ = write_metadata(&root, &metadata);
+            }
+            emit_provisioning(&app, &id, "resolve_minecraft", "failed", &error);
+            return Err(error);
+        }
+    };
+    emit_provisioning(&app, &id, "resolve_minecraft", "complete", "Minecraft metadata and loader installed");
+    emit_provisioning(&app, &id, "resolve_java", "active", "Resolving compatible Java");
+    let java_path = match async {
+        let version_dir = root.join("versions").join(&installed_version_id);
+        let version_json = version_dir.join(format!("{installed_version_id}.json"));
+        let metadata = std::fs::read_to_string(&version_json)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+        let metadata = metadata.map(|value| {
+            if value.get("javaVersion").is_some() {
+                return value;
+            }
+            value.get("inheritsFrom")
+                .and_then(|item| item.as_str())
+                .and_then(|id| std::fs::read_to_string(root.join("versions").join(id).join(format!("{id}.json"))).ok())
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                .unwrap_or(value)
+        });
+        let required_major = metadata
+            .as_ref()
+            .map(|value| crate::java::get_required_java_major_from_metadata(&mc_version, value))
+            .unwrap_or_else(|| crate::java::get_required_java_major(&mc_version));
+        crate::java::ensure_java_for_major(app.clone(), None, required_major).await
+    }.await {
+        Ok(path) => path,
+        Err(error) => {
+            if let Some(mut metadata) = read_metadata(&root, &id) {
+                metadata.install_state = Some("failed".to_string());
+                metadata.updated_at = now_secs();
+                let _ = write_metadata(&root, &metadata);
+            }
+            emit_provisioning(&app, &id, "resolve_java", "failed", &error);
+            return Err(error);
+        }
+    };
+    emit_provisioning(&app, &id, "resolve_java", "complete", "Java runtime ready");
+    emit_provisioning(&app, &id, "resolve_default_mods", "active", "Resolving Fabric baseline content");
+
+    let mut metadata = InstanceMetadata {
+        id: id.clone(),
+        name: instance_name,
+        mc_version: mc_version.clone(),
+        loader: loader.clone(),
+        loader_version: resolved_loader_version.clone(),
+        loader_mode,
+        installed_version_id,
+        game_dir: None,
+        java_runtime: Some(java_path.clone()),
+        java_path: Some(java_path.clone()),
+        java_version: crate::java::check_java_runtime(Path::new(&java_path), Some(&mc_version)).map(|runtime| runtime.version),
+        memory_mb: None,
+        java_args: None,
+        install_state: Some("provisioning".to_string()),
+        created_at,
+        updated_at: now_secs(),
+        last_played_at: None,
+    };
+    write_metadata(&root, &metadata)?;
+    if loader == "fabric" {
+        if let Some(loader_version) = resolved_loader_version.as_deref() {
+            if let Err(error) = crate::mod_browser::install_default_fabric_mods(
+                app.clone(),
+                &mc_version,
+                loader_version,
+                &id,
+                &root,
+            ).await {
+                append_launcher_log("warn", "fabric.baseline", &format!("Baseline content completed with unavailable components: {error}"));
+            }
+        }
+    }
+    emit_provisioning(&app, &id, "resolve_default_mods", "complete", "Baseline content resolved");
+    emit_provisioning(&app, &id, "verify", "active", "Verifying instance files and metadata");
+    let version_json = root.join("versions").join(&metadata.installed_version_id).join(format!("{}.json", metadata.installed_version_id));
+    if !version_json.exists() || !Path::new(&java_path).exists() {
+        metadata.install_state = Some("failed".to_string());
+        metadata.updated_at = now_secs();
+        write_metadata(&root, &metadata)?;
+        let error = "Provisioning verification failed: required version metadata or Java runtime is missing".to_string();
+        emit_provisioning(&app, &id, "verify", "failed", &error);
+        return Err(error);
+    }
+    metadata.install_state = Some("ready".to_string());
+    metadata.updated_at = now_secs();
+    write_metadata(&root, &metadata)?;
+    emit_provisioning(&app, &id, "verify", "complete", "Instance verified");
+    emit_provisioning(&app, &id, "finalize", "complete", "Instance is ready");
     Ok(id)
 }
 
@@ -549,10 +847,51 @@ pub fn update_instance(
         if !matches!(loader.as_str(), "vanilla" | "fabric" | "forge") {
             return Err(format!("Unsupported loader: {loader}"));
         }
+        if loader != meta.loader {
+            let mods_dir = meta
+                .game_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| instance_dir(&root, &instance_id))
+                .join("mods");
+            let has_mods = fs::read_dir(&mods_dir)
+                .map(|entries| entries.flatten().any(|entry| entry.path().is_file()))
+                .unwrap_or(false);
+            if has_mods {
+                return Err("Loader change blocked: inspect or remove installed mods before changing the loader.".to_string());
+            }
+        }
         meta.loader = loader;
     }
     if update.loader_version.is_some() {
         meta.loader_version = update.loader_version;
+    }
+    if let Some(mode) = update.loader_mode {
+        if !matches!(mode.as_str(), "automatic" | "manual") {
+            return Err(format!("Unsupported loader mode: {mode}"));
+        }
+        meta.loader_mode = mode;
+    }
+    if update.game_dir.is_some() {
+        meta.game_dir = update.game_dir;
+    }
+    if update.java_path.is_some() {
+        meta.java_path = update.java_path;
+    }
+    if update.java_runtime.is_some() {
+        meta.java_runtime = update.java_runtime;
+    }
+    if update.java_version.is_some() {
+        meta.java_version = update.java_version;
+    }
+    if update.memory_mb.is_some() {
+        meta.memory_mb = update.memory_mb;
+    }
+    if update.java_args.is_some() {
+        meta.java_args = update.java_args;
+    }
+    if update.install_state.is_some() {
+        meta.install_state = update.install_state;
     }
     meta.updated_at = now_secs();
     write_metadata(&root, &meta)?;
@@ -583,7 +922,8 @@ pub fn duplicate_instance(
     let root = aqua_root(mc_dir)?;
     let source_meta = read_metadata(&root, &instance_id)
         .ok_or_else(|| format!("Instance metadata not found: {instance_id}"))?;
-    let new_id = safe_id(&new_name)?;
+    let new_name = validate_instance_name(&new_name)?;
+    let new_id = new_instance_id(&root);
     let source = instance_dir(&root, &instance_id);
     let target = instance_dir(&root, &new_id);
     if target.exists() {
@@ -593,11 +933,19 @@ pub fn duplicate_instance(
     let ts = now_secs();
     write_metadata(&root, &InstanceMetadata {
         id: new_id.clone(),
-        name: new_name.trim().to_string(),
+        name: new_name,
         mc_version: source_meta.mc_version,
         loader: source_meta.loader,
         loader_version: source_meta.loader_version,
+        loader_mode: source_meta.loader_mode,
         installed_version_id: source_meta.installed_version_id,
+        game_dir: source_meta.game_dir,
+        java_path: source_meta.java_path,
+        java_runtime: source_meta.java_runtime,
+        java_version: source_meta.java_version,
+        memory_mb: source_meta.memory_mb,
+        java_args: source_meta.java_args,
+        install_state: source_meta.install_state,
         created_at: ts,
         updated_at: ts,
         last_played_at: None,
@@ -608,11 +956,53 @@ pub fn duplicate_instance(
 #[tauri::command]
 pub fn delete_instance(mc_dir: Option<String>, instance_id: String) -> Result<(), String> {
     let root = aqua_root(mc_dir)?;
-    let dir = instance_dir(&root, &instance_id);
-    if !dir.exists() {
-        return Err(format!("Instance folder not found: {instance_id}"));
+    let deleted_metadata = read_metadata(&root, &instance_id);
+    let owned_game_dir = deleted_metadata.as_ref().and_then(|meta| meta.game_dir.clone()).map(PathBuf::from);
+    let candidates = [
+        root.join("aqua_blobs").join("profiles").join(&instance_id),
+        root.join("profiles").join(&instance_id),
+        root.join("instances").join(&instance_id),
+    ];
+    let mut removed = false;
+    for dir in candidates {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+            removed = true;
+        }
     }
-    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
+    if let Some(game_dir) = owned_game_dir {
+        if game_dir != root && game_dir.starts_with(&root) && game_dir.exists() {
+            std::fs::remove_dir_all(game_dir).map_err(|e| e.to_string())?;
+            removed = true;
+        }
+    }
+    let version_dir = root.join("versions").join(&instance_id);
+    if version_dir.exists() {
+        std::fs::remove_dir_all(version_dir).map_err(|e| e.to_string())?;
+        removed = true;
+    }
+    if !removed {
+        // Deletion is idempotent: a folder removed externally is already gone.
+        return Ok(());
+    }
+    if let Some(metadata) = deleted_metadata {
+        let referenced_elsewhere = [
+            root.join("aqua_blobs").join("profiles"),
+            root.join("profiles"),
+            root.join("instances"),
+        ].iter().any(|directory| {
+            std::fs::read_dir(directory).ok().into_iter().flatten().flatten().any(|entry| {
+                read_metadata(&root, &entry.file_name().to_string_lossy()).map(|other| other.installed_version_id == metadata.installed_version_id).unwrap_or(false)
+            })
+        });
+        if !referenced_elsewhere {
+            let version_dir = root.join("versions").join(&metadata.installed_version_id);
+            if version_dir.exists() {
+                let _ = std::fs::remove_dir_all(version_dir);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -633,4 +1023,12 @@ pub fn mark_instance_played(mc_dir: Option<String>, instance_id: String) -> Resu
         write_metadata(&root, &meta)?;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_instance(mc_dir: Option<String>, instance_id: String) -> Result<InstanceInfo, String> {
+    let root = aqua_root(mc_dir)?;
+    let meta = read_metadata(&root, &instance_id)
+        .ok_or_else(|| format!("Instance not found: {}", instance_id))?;
+    Ok(instance_info(&root, meta))
 }

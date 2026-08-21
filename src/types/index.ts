@@ -22,6 +22,8 @@ export type ContentItem = {
   installed: boolean
   iconLabel: string
   accent: string
+  pageUrl?: string
+  iconUrl?: string
 }
 
 export type Instance = {
@@ -46,13 +48,21 @@ export type Profile = {
   updated: string
 }
 
+export type DownloadJobStatus = 'queued' | 'downloading' | 'installing' | 'completed' | 'failed' | 'cancelled'
+
 export type DownloadJob = {
-  id: string
+  id: number
   name: string
-  category: string
-  progress: number
-  speed: string
-  status: 'Downloading' | 'Queued' | 'Paused' | 'Completed' | 'Failed'
+  url: string
+  dest: string
+  status: DownloadJobStatus
+  downloaded_bytes: number
+  total_bytes: number | null
+  percentage: number | null
+  speed: string | null
+  error: string | null
+  created_at: number
+  updated_at: number
 }
 
 export type NewsItem = {

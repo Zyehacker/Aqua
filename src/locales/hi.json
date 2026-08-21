@@ -1,0 +1,4 @@
+{
+  "nav.home": "होम", "nav.instances": "इंस्टेंस", "nav.content": "कंटेंट", "nav.downloads": "डाउनलोड", "nav.settings": "सेटिंग्स",
+  "common.launch": "लॉन्च", "common.save": "सहेजें", "common.cancel": "रद्द करें", "common.delete": "हटाएं", "settings.language": "भाषा", "settings.languageDescription": "Aqua इंटरफ़ेस की भाषा चुनें", "settings.saved": "सेटिंग्स सहेजी गईं", "discord.join": "हमारे Discord से जुड़ें", "account.notSignedIn": "साइन इन नहीं है", "account.signedIn": "साइन इन है", "instance.ready": "तैयार", "instance.installing": "इंस्टॉल हो रहा है", "instance.needsAttention": "ध्यान आवश्यक", "content.noResults": "कोई परिणाम नहीं", "content.noCompatible": "इस इंस्टेंस के लिए कोई संगत संस्करण नहीं", "content.unableToReach": "Modrinth तक पहुंच नहीं हो सकी"
+}

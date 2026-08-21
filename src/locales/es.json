@@ -1,0 +1,4 @@
+{
+  "nav.home": "Inicio", "nav.instances": "Instancias", "nav.content": "Contenido", "nav.downloads": "Descargas", "nav.settings": "Ajustes",
+  "common.launch": "Iniciar", "common.save": "Guardar", "common.cancel": "Cancelar", "common.delete": "Eliminar", "settings.language": "Idioma", "settings.languageDescription": "Elige el idioma de la interfaz de Aqua", "settings.saved": "Ajustes guardados", "discord.join": "Unirse a nuestro Discord", "account.notSignedIn": "Sin iniciar sesión", "account.signedIn": "Sesión iniciada", "instance.ready": "Listo", "instance.installing": "Instalando", "instance.needsAttention": "Requiere atención", "content.noResults": "Sin resultados", "content.noCompatible": "No hay versiones compatibles para esta instancia", "content.unableToReach": "No se puede acceder a Modrinth"
+}

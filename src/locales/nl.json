@@ -1,0 +1,4 @@
+{
+  "nav.home": "Home", "nav.instances": "Instanties", "nav.content": "Inhoud", "nav.downloads": "Downloads", "nav.settings": "Instellingen",
+  "common.launch": "Starten", "common.save": "Opslaan", "common.cancel": "Annuleren", "common.delete": "Verwijderen", "settings.language": "Taal", "settings.languageDescription": "Kies de taal van de Aqua-interface", "settings.saved": "Instellingen opgeslagen", "discord.join": "Word lid van onze Discord", "account.notSignedIn": "Niet ingelogd", "account.signedIn": "Ingelogd", "instance.ready": "Gereed", "instance.installing": "Installeren", "instance.needsAttention": "Aandacht vereist", "content.noResults": "Geen resultaten", "content.noCompatible": "Geen compatibele versies voor deze instantie", "content.unableToReach": "Modrinth niet bereikbaar"
+}

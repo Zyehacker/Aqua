@@ -1,0 +1,4 @@
+{
+  "nav.home": "ホーム", "nav.instances": "インスタンス", "nav.content": "コンテンツ", "nav.downloads": "ダウンロード", "nav.settings": "設定",
+  "common.launch": "起動", "common.save": "保存", "common.cancel": "キャンセル", "common.delete": "削除", "settings.language": "言語", "settings.languageDescription": "Aqua の表示言語を選択", "settings.saved": "設定を保存しました", "discord.join": "Discord に参加", "account.notSignedIn": "未ログイン", "account.signedIn": "ログイン中", "instance.ready": "準備完了", "instance.installing": "インストール中", "instance.needsAttention": "要確認", "content.noResults": "結果なし", "content.noCompatible": "このインスタンスに対応するバージョンなし", "content.unableToReach": "Modrinth に接続できません"
+}

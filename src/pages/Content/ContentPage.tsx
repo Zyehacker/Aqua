@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   Box,
@@ -22,11 +22,12 @@ import SearchInput from '../../components/ui/SearchInput'
 import ProgressBar from '../../components/ui/ProgressBar'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
-import { CURRENT_PROFILE } from '../../data/mock'
-import { getInstalledCount, searchContent } from '../../services/contentService'
-import { appActions, useAppStore } from '../../stores/appStore'
+import { fetchInstalledItems, fetchRemoteContent, invalidateContentCache } from '../../services/contentService'
+import * as tauri from '../../utils/tauri'
 import type { ContentCategory, ContentItem, ContentPlatform } from '../../types'
 import { cn } from '../../utils/cn'
+import { formatInstanceHeading } from '../../utils/instanceDisplay'
+import { useLauncherData } from '../../hooks/useLauncherData'
 
 const CATEGORY_META: Record<
   Exclude<ContentCategory, 'overview'>,
@@ -36,36 +37,36 @@ const CATEGORY_META: Record<
     label: 'Mods',
     description: 'Gameplay, performance, and utility mods.',
     icon: Box,
-    color: '#c084fc',
-    soft: 'rgba(192,132,252,0.16)',
+    color: 'var(--primary)',
+    soft: 'var(--primary-soft)',
   },
   modpacks: {
     label: 'Modpacks',
     description: 'Complete, curated profile setups.',
     icon: Package,
-    color: '#ff9f1a',
-    soft: 'rgba(255,159,26,0.16)',
+    color: 'var(--primary)',
+    soft: 'var(--primary-soft)',
   },
   'resource-packs': {
     label: 'Resource Packs',
     description: 'Textures and visual style packs.',
     icon: ImageIcon,
-    color: '#4ade80',
-    soft: 'rgba(74,222,128,0.16)',
+    color: 'var(--primary)',
+    soft: 'var(--primary-soft)',
   },
   shaders: {
     label: 'Shaders',
     description: 'Lighting and atmosphere presets.',
     icon: Sparkles,
-    color: '#38bdf8',
-    soft: 'rgba(56,189,248,0.16)',
+    color: 'var(--primary)',
+    soft: 'var(--primary-soft)',
   },
   'data-packs': {
     label: 'Data Packs',
     description: 'World rules and gameplay tweaks.',
     icon: FileText,
-    color: '#facc15',
-    soft: 'rgba(250,204,21,0.16)',
+    color: 'var(--primary)',
+    soft: 'var(--primary-soft)',
   },
 }
 
@@ -78,28 +79,30 @@ const NAV: Array<{ id: ContentCategory; label: string; icon: typeof Gauge }> = [
   { id: 'data-packs', label: 'Data Packs', icon: FileText },
 ]
 
-function countInstalled(category: Exclude<ContentCategory, 'overview'>) {
-  return getInstalledCount(category)
-}
-
 function ContentSidebar({
   active,
   onSelect,
+  profileLabel,
+  instances,
+  activeInstanceId,
+  onInstanceChange,
 }: {
   active: ContentCategory
   onSelect: (id: ContentCategory) => void
+  profileLabel: string
+  instances: tauri.BackendInstance[]
+  activeInstanceId: string | null
+  onInstanceChange: (id: string) => void
 }) {
   return (
-    <aside className="content-sidebar glass-strong" aria-label="Content Manager">
+    <aside className="content-sidebar" aria-label="Content Manager">
       <div className="content-sidebar__brand">
         <div className="content-sidebar__icon">
           <Layers size={20} />
         </div>
         <div>
           <h1>Content Manager</h1>
-          <p>
-            {CURRENT_PROFILE.version}-{CURRENT_PROFILE.loader.split(' ')[0]}
-          </p>
+          <p>{profileLabel}</p>
         </div>
       </div>
 
@@ -116,7 +119,6 @@ function ContentSidebar({
         <div className="content-nav__label">Library</div>
         {NAV.filter((item) => item.id !== 'overview').map((item) => {
           const Icon = item.icon
-          const count = countInstalled(item.id as Exclude<ContentCategory, 'overview'>)
           return (
             <button
               key={item.id}
@@ -126,18 +128,20 @@ function ContentSidebar({
             >
               <Icon size={18} />
               {item.label}
-              <span className="spacer" />
-              {count > 0 ? <span className="count-badge">{count}</span> : null}
             </button>
           )
         })}
       </div>
 
       <div className="content-sidebar__footer">
-        <strong>Minecraft {CURRENT_PROFILE.version}</strong>
-        <p className="small muted" style={{ marginTop: 4 }}>
-          {CURRENT_PROFILE.loader.split(' ')[0]} · Isolated Profile
-        </p>
+        <label className="content-instance-select">
+          <span>Install target</span>
+          <select value={activeInstanceId ?? ''} onChange={(event) => onInstanceChange(event.target.value)}>
+            {instances.length === 0 ? <option value="">No instance available</option> : null}
+            {instances.map((instance) => <option key={instance.id} value={instance.id}>{formatInstanceHeading(instance)}</option>)}
+          </select>
+        </label>
+        <strong>{profileLabel}</strong>
       </div>
     </aside>
   )
@@ -146,21 +150,20 @@ function ContentSidebar({
 function OverviewPanel({
   onManage,
   onClose,
+  profileLabel,
 }: {
   onManage: (id: Exclude<ContentCategory, 'overview'>) => void
   onClose: () => void
+  profileLabel: string
 }) {
-  const toast = useToast()
-  const totalInstalled = getInstalledCount()
-
   return (
-    <section className="content-main glass">
+    <section className="content-main">
       <div className="content-main__header">
         <div>
           <h2 className="page-title" style={{ fontSize: 28 }}>
             Overview
           </h2>
-          <p className="page-subtitle">Everything installed for this profile, in one place.</p>
+          <p className="page-subtitle">Installed content for {profileLabel}.</p>
         </div>
         <Button variant="ghost" size="icon" aria-label="Close content manager" onClick={onClose}>
           <X size={18} />
@@ -170,21 +173,12 @@ function OverviewPanel({
       <div className="overview-hero">
         <div className="overview-hero__top">
           <div>
-            <p className="eyebrow">Profile library</p>
-            <h2>{totalInstalled} items installed</h2>
+            <p className="eyebrow">Selected instance</p>
+            <h2>Content library</h2>
             <p>
-              Content stays isolated to this profile and is checked against Minecraft {CURRENT_PROFILE.version} before
-              launch.
+              Select a category to browse or manage content.
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => toast.pushToast('Library refreshed', 'success')}
-          >
-            <RefreshCw size={15} />
-            Refresh
-          </Button>
         </div>
       </div>
 
@@ -192,7 +186,6 @@ function OverviewPanel({
         {(Object.keys(CATEGORY_META) as Array<Exclude<ContentCategory, 'overview'>>).map((key) => {
           const meta = CATEGORY_META[key]
           const Icon = meta.icon
-          const count = countInstalled(key)
           return (
             <motion.button
               key={key}
@@ -206,7 +199,6 @@ function OverviewPanel({
                 <div className="category-card__icon" style={{ background: meta.soft, color: meta.color }}>
                   <Icon size={20} />
                 </div>
-                <div className="category-card__count">{count}</div>
               </div>
               <strong>{meta.label}</strong>
               <span>
@@ -223,13 +215,16 @@ function OverviewPanel({
 function DetailPanel({
   item,
   onInstall,
+  onRemove,
+  installing,
+  activeLoader,
 }: {
   item: ContentItem | null
   onInstall: (item: ContentItem) => void
+  onRemove: (item: ContentItem) => void
+  installing: boolean
+  activeLoader?: string | null
 }) {
-  const installingId = useAppStore((s) => s.installingId)
-  const installProgress = useAppStore((s) => s.installProgress)
-
   if (!item) {
     return (
       <aside className="content-detail glass">
@@ -241,14 +236,11 @@ function DetailPanel({
     )
   }
 
-  const installing = installingId === item.id
-  const done = installing && installProgress >= 100
-
   return (
     <aside className="content-detail glass">
       <div className="content-detail__head">
         <div className="content-detail__icon" style={{ background: `linear-gradient(135deg, ${item.accent}55, ${item.accent}22)` }}>
-          {item.iconLabel}
+          {item.iconUrl ? <img src={item.iconUrl} alt="" loading="lazy" decoding="async" /> : item.iconLabel}
         </div>
         <div>
           <h2>{item.name}</h2>
@@ -259,8 +251,11 @@ function DetailPanel({
       <p className="content-detail__desc">{item.description}</p>
 
       <div className="info-box">
-        Aqua stages this {item.category.replace('-', ' ')} into an isolated profile folder and verifies loader
-        compatibility before enabling it at launch.
+        {item.installed
+          ? 'Installed in the selected instance.'
+          : activeLoader === 'vanilla'
+            ? 'Mods cannot be installed into a Vanilla instance. Use Fabric or Forge.'
+            : 'Compatibility checked against the selected Minecraft version and loader.'}
       </div>
 
       <div className="tag-row">
@@ -271,42 +266,61 @@ function DetailPanel({
         ))}
       </div>
 
-      <a className="ext-link" href="https://modrinth.com" target="_blank" rel="noreferrer">
+      <a className="ext-link" href={item.pageUrl ?? 'https://modrinth.com'} target="_blank" rel="noreferrer">
         View on Modrinth
         <ExternalLink size={14} />
       </a>
 
       <div className="content-detail__footer">
-        {installing ? (
-          <ProgressBar
-            value={installProgress}
-            label={done ? 'Install complete' : 'Downloading pack files...'}
-            showValue
-          />
-        ) : (
-          <ProgressBar value={item.installed ? 100 : 0} label={item.installed ? 'Installed' : 'Ready to install'} showValue />
-        )}
+        <ProgressBar value={item.installed ? 100 : 0} label={item.installed ? 'Installed' : 'Ready to install'} showValue />
         <div style={{ marginTop: 14 }}>
           <Button
             block
-            disabled={installing && !done}
+            disabled={installing || (categoryIsMod(item.category) && activeLoader === 'vanilla')}
             onClick={() => onInstall(item)}
           >
-            {installing && !done ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-            {item.installed || done ? 'Reinstall' : installing ? 'Install' : 'Install'}
+            {installing ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
+            {item.installed ? 'Reinstall' : 'Install'}
           </Button>
+          {item.installed ? (
+            <Button block variant="danger" disabled={installing} onClick={() => onRemove(item)}>
+              Remove
+            </Button>
+          ) : null}
         </div>
       </div>
     </aside>
   )
 }
 
+function categoryIsMod(category: ContentItem['category']) {
+  return category === 'mods'
+}
+
+function contentErrorTitle(message: string) {
+  const normalized = message.toLowerCase()
+  if (normalized.includes('unable to reach') || normalized.includes('request failed') || normalized.includes('network')) {
+    return 'Unable to reach Modrinth'
+  }
+  if (normalized.includes('no compatible')) {
+    return 'No compatible versions for this instance'
+  }
+  if (normalized.includes('metadata unavailable')) {
+    return 'Instance compatibility information unavailable'
+  }
+  return 'Unable to resolve content'
+}
+
 function BrowsePanel({
   category,
   onClose,
+  activeInstance,
+  mcDir,
 }: {
   category: Exclude<ContentCategory, 'overview'>
   onClose: () => void
+  activeInstance: tauri.BackendInstance | null
+  mcDir?: string | null
 }) {
   const toast = useToast()
   const meta = CATEGORY_META[category]
@@ -316,24 +330,123 @@ function BrowsePanel({
   const [order, setOrder] = useState('desc')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [items, setItems] = useState<ContentItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [installingId, setInstallingId] = useState<string | null>(null)
+  const [reload, setReload] = useState(0)
 
-  const items = useMemo(() => {
-    let list = searchContent(category, query, tab === 'installed')
-    list = [...list].sort((a, b) => {
+  const mcVersion = activeInstance?.mc_version || null
+  const loader = activeInstance?.loader || null
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (!activeInstance) {
+        setItems([])
+        setLoadError(null)
+        return
+      }
+      setLoading(true)
+      setLoadError(null)
+      try {
+        if (tab === 'installed') {
+          const list = await fetchInstalledItems(category, activeInstance?.id, mcDir)
+          if (!cancelled) setItems(list)
+        } else {
+          const list = await fetchRemoteContent(
+            category,
+            query,
+            mcVersion,
+            loader,
+            activeInstance?.id ?? null,
+            activeInstance?.loader_version ?? null,
+            mcDir,
+          )
+          if (!cancelled) setItems(list)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setItems([])
+          setLoadError(err instanceof Error ? err.message : 'Unable to load content from Modrinth.')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    const timer = window.setTimeout(load, 300)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [category, tab, query, mcVersion, loader, activeInstance, activeInstance?.id, mcDir, reload])
+
+  const sortedItems = useMemo(() => {
+    const list = [...items]
+    list.sort((a, b) => {
       if (sort === 'name') return a.name.localeCompare(b.name)
-      return Number.parseFloat(b.downloads) - Number.parseFloat(a.downloads)
+      return (Number.parseFloat(b.downloads) || 0) - (Number.parseFloat(a.downloads) || 0)
     })
     if (order === 'asc') list.reverse()
     return list
-  }, [category, order, query, sort, tab])
+  }, [items, order, sort])
 
-  const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null
+  const selected = sortedItems.find((item) => item.id === selectedId) ?? sortedItems[0] ?? null
 
-  const installedCount = countInstalled(category)
+  const handleRemove = async (item: ContentItem) => {
+    if (!activeInstance || !item.installed) return
+    setInstallingId(item.id)
+    try {
+      await tauri.removeInstanceItem(item.id, activeInstance.id, category, mcDir)
+      invalidateContentCache()
+      const list = await fetchInstalledItems(category, activeInstance.id, mcDir)
+      setItems(list)
+      setSelectedId(null)
+      toast.pushToast(`${item.name} removed`, 'success')
+    } catch (error) {
+      toast.pushToast(error instanceof Error ? error.message : 'Unable to remove content.', 'error')
+    } finally {
+      setInstallingId(null)
+    }
+  }
+
+  const handleInstall = async (item: ContentItem) => {
+    if (!activeInstance || !mcVersion || !loader) {
+      toast.pushToast('Select an instance first', 'info')
+      return
+    }
+    setInstallingId(item.id)
+    try {
+      await tauri.installModrinthProject(
+        item.id,
+        category,
+        mcVersion,
+        activeInstance?.id,
+        loader,
+        activeInstance.loader_version,
+        mcDir,
+        category === 'modpacks' ? item.name : null,
+        item.iconUrl,
+      )
+      toast.pushToast(`${item.name} installed successfully`, 'success')
+      invalidateContentCache()
+      // Confirm the persisted instance state, rather than marking a search hit
+      // as installed locally before the backend has written the file.
+      const list = await fetchInstalledItems(category, activeInstance.id, mcDir)
+      setItems(list)
+      setTab('installed')
+      setSelectedId(null)
+    } catch (err) {
+      toast.pushToast(`Install failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+    } finally {
+      setInstallingId(null)
+    }
+  }
 
   return (
     <>
-      <section className="content-main glass">
+    <section className="content-main">
         <div className="content-main__header">
           <div>
             <h2 className="page-title" style={{ fontSize: 28 }}>
@@ -352,7 +465,7 @@ function BrowsePanel({
               Browse
             </button>
             <button type="button" className={cn(tab === 'installed' && 'active')} onClick={() => setTab('installed')}>
-              Installed {installedCount}
+              Installed
             </button>
           </div>
 
@@ -379,20 +492,23 @@ function BrowsePanel({
             >
               Modrinth
             </button>
-            <button
-              type="button"
-              className={cn(platform === 'curseforge' && 'active')}
-              onClick={() => setPlatform('curseforge')}
-            >
-              CurseForge
-            </button>
           </div>
 
           <Button
             variant="ghost"
             size="icon"
             aria-label="Refresh results"
-            onClick={() => toast.pushToast(`${meta.label} refreshed from ${platform}`, 'success')}
+            onClick={async () => {
+              invalidateContentCache()
+              if (tab === 'installed') {
+                const list = await fetchInstalledItems(category, activeInstance?.id, mcDir)
+                setItems(list)
+              } else {
+                const list = await fetchRemoteContent(category, query, mcVersion, loader, activeInstance?.id ?? null, activeInstance?.loader_version ?? null, mcDir)
+                setItems(list)
+              }
+              toast.pushToast(`${meta.label} refreshed`, 'success')
+            }}
           >
             <RefreshCw size={16} />
           </Button>
@@ -406,15 +522,23 @@ function BrowsePanel({
         />
 
         <div className="content-list" role="listbox" aria-label={meta.label}>
-          {items.length === 0 ? (
+          {loadError ? (
+            <EmptyState title={contentErrorTitle(loadError)} description={loadError} actionLabel="Retry" onAction={() => setReload((value) => value + 1)} />
+          ) : !activeInstance ? (
+            <EmptyState title="Select an install target" description="Choose an instance in the sidebar before browsing or installing content." />
+          ) : loading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
+              <LoaderCircle size={24} className="spin" color="var(--primary)" />
+            </div>
+          ) : sortedItems.length === 0 ? (
             <EmptyState
-              title={`No ${meta.label.toLowerCase()} found`}
-              description="Try another search, switch platforms, or clear installed filters."
-              actionLabel="Clear search"
+              title={tab === 'installed' ? `No installed ${meta.label.toLowerCase()}` : 'No results'}
+              description={tab === 'installed' ? 'No items installed in this instance folder.' : 'Try another search term.'}
+              actionLabel={query ? 'Clear search' : undefined}
               onAction={() => setQuery('')}
             />
           ) : (
-            items.map((item) => (
+            sortedItems.map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -427,7 +551,7 @@ function BrowsePanel({
                   className="content-item__icon"
                   style={{ background: `linear-gradient(135deg, ${item.accent}66, ${item.accent}22)` }}
                 >
-                  {item.iconLabel}
+                  {item.iconUrl ? <img src={item.iconUrl} alt="" loading="lazy" decoding="async" /> : item.iconLabel}
                 </div>
                 <div className="content-item__meta">
                   <strong>{item.name}</strong>
@@ -445,10 +569,10 @@ function BrowsePanel({
 
       <DetailPanel
         item={selected}
-        onInstall={(item) => {
-          appActions.startInstall(item.id)
-          toast.pushToast(`Installing ${item.name}`, 'info')
-        }}
+        installing={installingId === selected?.id}
+        activeLoader={loader}
+        onInstall={handleInstall}
+        onRemove={handleRemove}
       />
     </>
   )
@@ -457,11 +581,14 @@ function BrowsePanel({
 export default function ContentPage() {
   const navigate = useNavigate()
   const [category, setCategory] = useState<ContentCategory>('overview')
+  const { instances, activeInstance, activeInstanceId, selectInstance, settings } = useLauncherData()
+
+  const profileLabel = activeInstance ? formatInstanceHeading(activeInstance) : 'No instance selected'
 
   return (
     <div className="page" style={{ paddingBottom: 0 }}>
       <div className={cn('content-shell', category !== 'overview' && 'with-detail')}>
-        <ContentSidebar active={category} onSelect={setCategory} />
+        <ContentSidebar active={category} onSelect={setCategory} profileLabel={profileLabel} instances={instances} activeInstanceId={activeInstanceId} onInstanceChange={(id) => void selectInstance(id)} />
 
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
@@ -473,9 +600,18 @@ export default function ContentPage() {
             style={{ display: 'contents' }}
           >
             {category === 'overview' ? (
-              <OverviewPanel onManage={(id) => setCategory(id)} onClose={() => navigate('/')} />
+              <OverviewPanel
+                onManage={(id) => setCategory(id)}
+                onClose={() => navigate('/')}
+                profileLabel={profileLabel}
+              />
             ) : (
-              <BrowsePanel category={category} onClose={() => setCategory('overview')} />
+              <BrowsePanel
+                category={category}
+                onClose={() => setCategory('overview')}
+                activeInstance={activeInstance}
+                mcDir={settings?.mc_dir}
+              />
             )}
           </motion.div>
         </AnimatePresence>
@@ -483,3 +619,4 @@ export default function ContentPage() {
     </div>
   )
 }
+

@@ -7,6 +7,8 @@ use tauri::{AppHandle, Manager};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
+    #[serde(default = "default_language")]
+    pub language: String,
     pub username: String,
     pub version: String,
     pub loader_type: String,
@@ -38,9 +40,14 @@ fn default_minimize_on_launch() -> bool {
     true
 }
 
+fn default_language() -> String {
+    "en".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            language: default_language(),
             username: "Player
             ".into(),
             version: "1.21.11".into(),
@@ -83,6 +90,38 @@ pub fn home_dir() -> Option<PathBuf> {
     } else {
         std::env::var_os("HOME").map(PathBuf::from)
     }
+}
+
+pub fn atomic_write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let temporary = path.with_extension(format!("{}.tmp", path.extension().and_then(|ext| ext.to_str()).unwrap_or("json")));
+    {
+        let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        file.write_all(data).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let destination: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        unsafe extern "system" {
+            fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+        }
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } == 0 {
+            let error = std::io::Error::last_os_error();
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(&temporary, path).map_err(|e| e.to_string())
 }
 
 pub fn default_mc_dir() -> Option<PathBuf> {
@@ -199,6 +238,7 @@ pub fn append_launcher_log(level: &str, source: &str, message: &str) {
             });
             let _ = writeln!(f, "{}", entry.to_string());
         }
+        rotate_logs(&dir, &path);
     }
 }
 
@@ -217,7 +257,47 @@ pub fn append_game_log(stream: &str, line: &str) {
             });
             let _ = writeln!(f, "{}", entry.to_string());
         }
+        rotate_logs(&dir, &path);
     }
+}
+
+fn rotate_logs(dir: &PathBuf, active: &PathBuf) {
+    let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60)).unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == *active || path.extension().and_then(|ext| ext.to_str()) != Some("log") { continue; }
+        if std::fs::metadata(&path).and_then(|meta| meta.modified()).map(|modified| modified < cutoff).unwrap_or(false) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn read_logs() -> Result<String, String> {
+    let mut paths = Vec::new();
+    if let Some(dir) = launcher_logs_dir() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            paths.extend(entries.flatten().filter_map(|entry| {
+                entry.path().is_file().then_some(entry.path())
+            }));
+        }
+    }
+    if let Some(dir) = game_logs_dir() {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            paths.extend(entries.flatten().filter_map(|entry| {
+                entry.path().is_file().then_some(entry.path())
+            }));
+        }
+    }
+    paths.sort();
+    let mut output = String::new();
+    for path in paths {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            output.push_str(&content);
+        }
+    }
+    Ok(output)
 }
 
 fn read_total_memory_mb() -> u64 {
@@ -229,6 +309,48 @@ fn read_total_memory_mb() -> u64 {
                     if kb > 0 {
                         return kb / 1024;
                     }
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct MemoryStatus {
+            length: u32,
+            memory_load: u32,
+            total_physical: u64,
+            available_physical: u64,
+            total_page_file: u64,
+            available_page_file: u64,
+            total_virtual: u64,
+            available_virtual: u64,
+            available_extended_virtual: u64,
+        }
+        extern "system" {
+            fn GlobalMemoryStatusEx(status: *mut MemoryStatus) -> i32;
+        }
+        let mut status = MemoryStatus {
+            length: std::mem::size_of::<MemoryStatus>() as u32,
+            memory_load: 0,
+            total_physical: 0,
+            available_physical: 0,
+            total_page_file: 0,
+            available_page_file: 0,
+            total_virtual: 0,
+            available_virtual: 0,
+            available_extended_virtual: 0,
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 && status.total_physical > 0 {
+            return status.total_physical / (1024 * 1024);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+            if let Ok(value) = String::from_utf8(output.stdout) {
+                if let Ok(bytes) = value.trim().parse::<u64>() {
+                    return bytes / (1024 * 1024);
                 }
             }
         }
@@ -298,7 +420,7 @@ pub fn get_settings(app: AppHandle) -> Settings {
 pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     let path = settings_path(&app);
     let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, data).map_err(|e| e.to_string())
+    atomic_write(&path, data.as_bytes())
 }
 
 #[tauri::command]

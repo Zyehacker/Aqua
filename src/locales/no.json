@@ -1,0 +1,4 @@
+{
+  "nav.home": "Hjem", "nav.instances": "Instanser", "nav.content": "Innhold", "nav.downloads": "Nedlastinger", "nav.settings": "Innstillinger",
+  "common.launch": "Start", "common.save": "Lagre", "common.cancel": "Avbryt", "common.delete": "Slett", "settings.language": "Språk", "settings.languageDescription": "Velg språk for Aqua-grensesnittet", "settings.saved": "Innstillinger lagret", "discord.join": "Bli med på Discord", "account.notSignedIn": "Ikke innlogget", "account.signedIn": "Innlogget", "instance.ready": "Klar", "instance.installing": "Installerer", "instance.needsAttention": "Krever oppmerksomhet", "content.noResults": "Ingen resultater", "content.noCompatible": "Ingen kompatible versjoner for denne instansen", "content.unableToReach": "Kunne ikke nå Modrinth"
+}

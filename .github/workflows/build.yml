@@ -1,4 +1,4 @@
-name: Build Aqua Client
+name: Aqua Client Release
 
 on:
   push:
@@ -7,23 +7,27 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-
+  release:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
+        include:
+          - os: ubuntu-22.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -32,14 +36,16 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install Rust
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo
+      - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -48,20 +54,19 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
 
-      - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@latest
-
-      - name: Build
-        run: npm run tauri build
-
-      - name: Upload Bundles
-        uses: actions/upload-artifact@v4
+      - name: Build & Publish with Tauri Action
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          name: Aqua-Client-${{ runner.os }}
-          path: |
-            src-tauri/target/release/bundle/**
-            src-tauri/target/release/*.exe
-          if-no-files-found: error
+          tagName: ${{ github.ref_name }}
+          releaseName: "Aqua Client ${{ github.ref_name }}"
+          releaseBody: "Release ${{ github.ref_name }} of Aqua Client."
+          releaseDraft: false
+          prerelease: false
+

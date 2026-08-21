@@ -7,11 +7,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::auth::load_account_file;
-use crate::java::ensure_java;
+use crate::java::{ensure_java_for_major, get_required_java_major_from_metadata};
 use crate::settings::{default_mc_dir, instance_dir, Settings, append_launcher_log};
 
 pub struct LaunchState {
     pub running: Mutex<bool>,
+    pub child_pid: Mutex<Option<u32>>,
 }
 
 fn current_os_str() -> &'static str {
@@ -21,6 +22,16 @@ fn current_os_str() -> &'static str {
         "osx"
     } else {
         "linux"
+    }
+}
+
+fn current_arch_str() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "x86" => "x86",
+        "aarch64" => "arm64",
+        "arm" => "arm32",
+        other => other,
     }
 }
 
@@ -34,7 +45,11 @@ pub fn library_allowed(lib: &serde_json::Value) -> bool {
             Some(name) => name == current,
             None => true,
         };
-        if matches {
+        let arch_matches = match rule.get("os").and_then(|o| o.get("arch")).and_then(|a| a.as_str()) {
+            Some(arch) => arch == current_arch_str(),
+            None => true,
+        };
+        if matches && arch_matches {
             allowed = action_allow;
         }
     }
@@ -64,6 +79,14 @@ fn effective_version_id(settings: &Settings) -> String {
             base.to_string()
         } else {
             format!("fabric-loader-{}-{}", loader.trim(), base)
+        }
+    } else if settings.loader_type == "forge" {
+        let base = settings.version.trim();
+        let loader = settings.fabric_loader_version.clone().unwrap_or_default();
+        if base.to_lowercase().contains("forge") || loader.trim().is_empty() || settings.instance_id.is_some() {
+            base.to_string()
+        } else {
+            format!("{}-forge-{}", base, loader.trim())
         }
     } else {
         settings.version.clone()
@@ -106,21 +129,79 @@ pub fn is_running(state: State<'_, LaunchState>) -> bool {
     state.running.lock().map(|g| *g).unwrap_or(false)
 }
 
+#[tauri::command]
+pub fn stop_minecraft(state: State<'_, LaunchState>) -> Result<(), String> {
+    let pid = state.child_pid.lock().map_err(|e| e.to_string())?.take();
+    let Some(pid) = pid else {
+        return Err("Minecraft is not running.".to_string());
+    };
+
+    let result = if cfg!(windows) {
+        Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output()
+    } else {
+        Command::new("kill").args(["-TERM", &pid.to_string()]).output()
+    };
+    result
+        .map_err(|e| format!("Unable to stop Minecraft: {e}"))
+        .and_then(|output| {
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+            }
+        })
+}
+
 fn load_effective_version_json(
     mc_dir: &std::path::Path,
     version_id: &str,
 ) -> Result<(serde_json::Value, PathBuf), String> {
-    let version_dir = mc_dir.join("versions").join(version_id);
-    let json_path = version_dir.join(format!("{version_id}.json"));
-    if !json_path.exists() {
-        return Err(format!("Version JSON not found: {}", json_path.display()));
+    let mut visiting = std::collections::HashSet::new();
+    load_effective_version_json_inner(mc_dir, version_id, &mut visiting)
+}
+
+fn load_effective_version_json_inner(
+    mc_dir: &std::path::Path,
+    version_id: &str,
+    visiting: &mut std::collections::HashSet<String>,
+) -> Result<(serde_json::Value, PathBuf), String> {
+    if !visiting.insert(version_id.to_string()) {
+        return Err(format!("Cyclic Minecraft version inheritance detected at '{version_id}'"));
     }
+    let versions_root = mc_dir.join("versions");
+    let direct_dir = versions_root.join(version_id);
+    let direct_json = direct_dir.join(format!("{version_id}.json"));
+    let (version_dir, json_path) = if direct_json.exists() {
+        (direct_dir, direct_json)
+    } else {
+        let mut found: Option<(PathBuf, PathBuf)> = None;
+        if let Ok(entries) = std::fs::read_dir(&versions_root) {
+            'profiles: for entry in entries.flatten() {
+                if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) { continue; }
+                let dir = entry.path();
+                let Ok(files) = std::fs::read_dir(&dir) else { continue; };
+                for file in files.flatten() {
+                    let path = file.path();
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("json") { continue; }
+                    let Ok(raw) = std::fs::read_to_string(&path) else { continue; };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else { continue; };
+                    let id_matches = value.get("id").and_then(|id| id.as_str()) == Some(version_id)
+                        || dir.file_name().and_then(|name| name.to_str()) == Some(version_id);
+                    if id_matches {
+                        found = Some((dir, path));
+                        break 'profiles;
+                    }
+                }
+            }
+        }
+        found.ok_or_else(|| format!("Version JSON not found for installed profile '{version_id}' under {}", versions_root.display()))?
+    };
 
     let raw = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
     let mut child: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
     if let Some(parent_id) = child.get("inheritsFrom").and_then(|v| v.as_str()).map(String::from) {
-        let (parent, _parent_dir) = load_effective_version_json(mc_dir, &parent_id)?;
+        let (parent, _parent_dir) = load_effective_version_json_inner(mc_dir, &parent_id, visiting)?;
 
         let mut merged_libs = Vec::new();
         if let Some(arr) = child.get("libraries").and_then(|v| v.as_array()) {
@@ -146,8 +227,14 @@ fn load_effective_version_json(
                 child["mainClass"] = p.clone();
             }
         }
+        if child.get("javaVersion").is_none() {
+            if let Some(p) = parent.get("javaVersion") {
+                child["javaVersion"] = p.clone();
+            }
+        }
     }
 
+    visiting.remove(version_id);
     Ok((child, version_dir))
 }
 
@@ -180,6 +267,53 @@ fn quote_command_arg(arg: &str) -> String {
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
     }
+}
+
+fn redacted_command_args(args: &[String]) -> Vec<String> {
+    let mut redact_next = false;
+    args.iter().map(|arg| {
+        if redact_next {
+            redact_next = false;
+            return "<redacted>".to_string();
+        }
+        if arg == "--accessToken" {
+            redact_next = true;
+        }
+        arg.clone()
+    }).collect()
+}
+
+fn argument_rules_allow(value: &serde_json::Value) -> bool {
+    let Some(rules) = value.get("rules").and_then(|rules| rules.as_array()) else { return true; };
+    let mut allowed = false;
+    for rule in rules {
+        let matches_os = rule.get("os").and_then(|os| os.get("name")).and_then(|name| name.as_str())
+            .map(|name| name == current_os_str()).unwrap_or(true);
+        if matches_os {
+            allowed = rule.get("action").and_then(|action| action.as_str()) == Some("allow");
+        }
+    }
+    allowed
+}
+
+fn expand_metadata_argument(
+    value: &serde_json::Value,
+    replacements: &std::collections::HashMap<&str, String>,
+) -> Vec<String> {
+    if value.is_object() && !argument_rules_allow(value) {
+        return Vec::new();
+    }
+    let raw = value.get("value").unwrap_or(value);
+    let values = raw.as_array().cloned().unwrap_or_else(|| vec![raw.clone()]);
+    values.into_iter().filter_map(|value| {
+        value.as_str().map(|argument| {
+            let mut expanded = argument.to_string();
+            for (key, replacement) in replacements {
+                expanded = expanded.replace(key, replacement);
+            }
+            expanded
+        })
+    }).collect()
 }
 
 fn native_extensions() -> &'static [&'static str] {
@@ -240,6 +374,18 @@ fn native_library_path(lib: &serde_json::Value) -> Option<String> {
         }
     }
 
+    if let Some(name) = lib.get("name").and_then(|n| n.as_str()) {
+        let classifier = name.split(':').nth(3)?;
+        if let Some(p) = lib.get("downloads")
+            .and_then(|d| d.get("classifiers"))
+            .and_then(|c| c.get(classifier))
+            .and_then(|a| a.get("path"))
+            .and_then(|p| p.as_str())
+        {
+            return Some(p.to_string());
+        }
+    }
+
     None
 }
 
@@ -288,11 +434,12 @@ fn extract_natives(
         let Some(rel) = native_library_path(lib) else { continue; };
         let jar = libs_root.join(&rel);
         if !jar.exists() {
-            continue;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("required native artifact is missing: {}", jar.display()),
+            ));
         }
-        if let Err(e) = extract_jar_natives(&jar, natives_dir, exts) {
-            eprintln!("[aqua] failed to extract {}: {e}", jar.display());
-        }
+        extract_jar_natives(&jar, natives_dir, exts)?;
     }
     Ok(())
 }
@@ -306,17 +453,31 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     let _ = std::fs::create_dir_all(&mc_dir);
     append_launcher_log("info", "storage", &format!("Using launcher root: {}", mc_dir.display()));
 
-    let effective_version = effective_version_id(settings);
+    let meta = if let Some(id) = &settings.instance_id {
+        if !id.trim().is_empty() {
+            crate::mods::read_metadata(&mc_dir, id)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    let java = ensure_java(
-        app.clone(),
-        settings.java_path.clone(),
-        settings.java_runtime.clone(),
-        Some(settings.version.clone()),
-    ).await?;
-    append_launcher_log("info", "java", &format!("Detected Java: {}", java));
+    let effective_version = meta.as_ref()
+        .map(|m| m.installed_version_id.clone())
+        .unwrap_or_else(|| effective_version_id(settings));
 
     let (v, version_dir) = load_effective_version_json(&mc_dir, &effective_version)?;
+    let minecraft_version = meta.as_ref()
+        .map(|m| m.mc_version.as_str())
+        .unwrap_or(settings.version.as_str());
+    let required_java_major = get_required_java_major_from_metadata(minecraft_version, &v);
+    let java = ensure_java_for_major(
+        app.clone(),
+        meta.as_ref().and_then(|m| m.java_path.clone()).or_else(|| settings.java_path.clone()),
+        required_java_major,
+    ).await?;
+    append_launcher_log("info", "java", &format!("Using Java {} for Minecraft {}: {}", required_java_major, minecraft_version, java));
 
     let parent_id = v.get("inheritsFrom").and_then(|p| p.as_str()).map(String::from);
     let (jar_owner_dir, jar_owner_id) = match &parent_id {
@@ -339,12 +500,14 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         .unwrap_or("legacy").to_string();
 
     let libs_root = mc_dir.join("libraries");
+    crate::install::ensure_version_libraries(app, &v, &mc_dir).await?;
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing_libraries: Vec<PathBuf> = Vec::new();
-    let mut seen_ga: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_library_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(libs) = v.get("libraries").and_then(|l| l.as_array()) {
         for lib in libs {
             if !library_allowed(lib) { continue; }
+            if native_library_path(lib).is_some() { continue; }
 
             let path = lib.get("downloads")
                 .and_then(|d| d.get("artifact"))
@@ -354,13 +517,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
                 .or_else(|| lib.get("name").and_then(|n| n.as_str()).map(maven_path_from_coord));
             let Some(path) = path else { continue };
 
-            let ga = if let Some(name) = lib.get("name").and_then(|n| n.as_str()) {
-                let parts: Vec<&str> = name.splitn(3, ':').collect();
-                if parts.len() >= 2 { format!("{}:{}", parts[0], parts[1]) } else { path.clone() }
-            } else {
-                path.clone()
-            };
-            if !seen_ga.insert(ga) { continue; }
+            if !seen_library_paths.insert(path.clone()) { continue; }
             let full = libs_root.join(&path);
             if full.exists() {
                 classpath.push(full);
@@ -398,10 +555,12 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         cmd.arg(&arg);
         launch_args.push(arg);
     };
-    let ram = settings.ram_mb.max(512);
+    let ram = meta.as_ref().and_then(|m| m.memory_mb).unwrap_or(settings.ram_mb).max(512);
     add_arg(&mut cmd, format!("-Xmx{}M", ram));
     add_arg(&mut cmd, "-Xms512M".to_string());
-    for arg in settings.jvm_args.split_whitespace() {
+    
+    let jvm_args = meta.as_ref().and_then(|m| m.java_args.clone()).unwrap_or_else(|| settings.jvm_args.clone());
+    for arg in jvm_args.split_whitespace() {
         if !arg.trim().is_empty() {
             add_arg(&mut cmd, arg.trim().to_string());
         }
@@ -410,11 +569,25 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     let natives_dir = version_dir.join("natives");
     let _ = std::fs::create_dir_all(&natives_dir);
     if let Some(libs) = v.get("libraries").and_then(|l| l.as_array()) {
-        if let Err(e) = extract_natives(libs, &libs_root, &natives_dir) {
-            let _ = app.emit("launch-log",
-                serde_json::json!({"stream": "stderr", "line": format!("[aqua] natives extract warning: {e}")}));
+        extract_natives(libs, &libs_root, &natives_dir)
+            .map_err(|e| format!("Native dependency validation failed: {e}"))?;
+    }
+    if let Some(args_obj) = v.get("arguments").and_then(|a| a.as_object()) {
+        if let Some(jvm_arr) = args_obj.get("jvm").and_then(|g| g.as_array()) {
+            let mut jvm_replacements = std::collections::HashMap::new();
+            jvm_replacements.insert("${natives_directory}", natives_dir.to_string_lossy().to_string());
+            jvm_replacements.insert("${launcher_name}", "aqua".to_string());
+            jvm_replacements.insert("${launcher_version}", "1.0".to_string());
+            jvm_replacements.insert("${classpath}", cp_str.clone());
+            for arg_val in jvm_arr {
+                for argument in expand_metadata_argument(arg_val, &jvm_replacements) {
+                    if argument == "-cp" || argument == cp_str { continue; }
+                    add_arg(&mut cmd, argument);
+                }
+            }
         }
     }
+
     add_arg(&mut cmd, format!("-Djava.library.path={}", natives_dir.display()));
     add_arg(&mut cmd, format!("-Djna.tmpdir={}", natives_dir.display()));
     add_arg(&mut cmd, format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={}", natives_dir.display()));
@@ -436,34 +609,74 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         }
     };
 
-    let game_profile_id = settings
-        .instance_id
-        .as_deref()
-        .filter(|id| !id.trim().is_empty())
-        .unwrap_or(&effective_version);
-    let game_dir = instance_dir(&mc_dir, game_profile_id);
+    let game_profile_id = meta.as_ref()
+        .map(|m| m.id.clone())
+        .unwrap_or_else(|| {
+            settings.instance_id
+                .as_deref()
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or(&effective_version)
+                .to_string()
+        });
+    let game_dir = meta.as_ref()
+        .and_then(|m| m.game_dir.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| instance_dir(&mc_dir, &game_profile_id));
     let _ = std::fs::create_dir_all(game_dir.join("mods"));
     let _ = std::fs::create_dir_all(game_dir.join("resourcepacks"));
     let _ = std::fs::create_dir_all(game_dir.join("shaderpacks"));
 
-    add_arg(&mut cmd, "--username".to_string());
-    add_arg(&mut cmd, username.clone());
-    add_arg(&mut cmd, "--version".to_string());
-    add_arg(&mut cmd, effective_version.clone());
-    add_arg(&mut cmd, "--gameDir".to_string());
-    add_arg(&mut cmd, game_dir.to_string_lossy().to_string());
-    add_arg(&mut cmd, "--assetsDir".to_string());
-    add_arg(&mut cmd, mc_dir.join("assets").to_string_lossy().to_string());
-    add_arg(&mut cmd, "--assetIndex".to_string());
-    add_arg(&mut cmd, asset_index.clone());
-    add_arg(&mut cmd, "--uuid".to_string());
-    add_arg(&mut cmd, uuid.clone());
-    add_arg(&mut cmd, "--accessToken".to_string());
-    add_arg(&mut cmd, access_token.clone());
-    add_arg(&mut cmd, "--userType".to_string());
-    add_arg(&mut cmd, user_type.clone());
-    add_arg(&mut cmd, "--versionType".to_string());
-    add_arg(&mut cmd, "release".to_string());
+    let mut replacements = std::collections::HashMap::new();
+    replacements.insert("${auth_player_name}", username);
+    replacements.insert("${version_name}", effective_version.clone());
+    replacements.insert("${game_directory}", game_dir.to_string_lossy().to_string());
+    replacements.insert("${assets_root}", mc_dir.join("assets").to_string_lossy().to_string());
+    replacements.insert("${assets_index_name}", asset_index.clone());
+    replacements.insert("${auth_uuid}", uuid);
+    replacements.insert("${auth_access_token}", access_token);
+    replacements.insert("${user_type}", user_type);
+    replacements.insert("${version_type}", "release".to_string());
+    replacements.insert("${user_properties}", "{}".to_string());
+
+    let resolve_arg = |arg: &str, map: &std::collections::HashMap<&str, String>| -> String {
+        let mut res = arg.to_string();
+        for (k, v) in map {
+            res = res.replace(k, v);
+        }
+        res
+    };
+
+    let mut game_args = Vec::new();
+    if let Some(args_obj) = v.get("arguments").and_then(|a| a.as_object()) {
+        if let Some(game_arr) = args_obj.get("game").and_then(|g| g.as_array()) {
+            for arg_val in game_arr {
+                game_args.extend(expand_metadata_argument(arg_val, &replacements));
+            }
+        }
+    } else if let Some(minecraft_args) = v.get("minecraftArguments").and_then(|m| m.as_str()) {
+        for part in minecraft_args.split_whitespace() {
+            game_args.push(resolve_arg(part, &replacements));
+        }
+    }
+
+    if game_args.is_empty() {
+        // Fallback just in case
+        game_args = vec![
+            "--username".into(), replacements["${auth_player_name}"].clone(),
+            "--version".into(), replacements["${version_name}"].clone(),
+            "--gameDir".into(), replacements["${game_directory}"].clone(),
+            "--assetsDir".into(), replacements["${assets_root}"].clone(),
+            "--assetIndex".into(), replacements["${assets_index_name}"].clone(),
+            "--uuid".into(), replacements["${auth_uuid}"].clone(),
+            "--accessToken".into(), replacements["${auth_access_token}"].clone(),
+            "--userType".into(), replacements["${user_type}"].clone(),
+            "--versionType".into(), replacements["${version_type}"].clone(),
+        ];
+    }
+
+    for arg in game_args {
+        add_arg(&mut cmd, arg);
+    }
 
     cmd.current_dir(&game_dir);
     cmd.stdout(Stdio::piped());
@@ -471,7 +684,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     drop(add_arg);
 
     let command_line = std::iter::once(java.clone())
-        .chain(launch_args.iter().cloned())
+        .chain(redacted_command_args(&launch_args))
         .map(|arg| quote_command_arg(&arg))
         .collect::<Vec<_>>()
         .join(" ");
@@ -485,6 +698,20 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         serde_json::json!({"stream": "stdout", "line": format!("[aqua] Classpath: {cp_str}")}),
     );
     append_launcher_log("info", "classpath", &format!("Classpath: {cp_str}"));
+    append_launcher_log(
+        "info",
+        "launch.config",
+        &format!(
+            "java={} main_class={} version_metadata={} game_directory={} natives_directory={} libraries={} arguments={}",
+            java,
+            main_class,
+            effective_version,
+            game_dir.display(),
+            natives_dir.display(),
+            classpath.len(),
+            launch_args.len()
+        ),
+    );
 
     let _ = app.emit("launch-status", serde_json::json!({
         "phase": "starting",
@@ -494,6 +721,11 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     let mut child = cmd.spawn().map_err(|e| {
         format!("Failed to start Java ({java}): {e}\nMake sure Java is installed and available, or set the Java path in Settings.")
     })?;
+    if let Some(state) = app.try_state::<LaunchState>() {
+        if let Ok(mut child_pid) = state.child_pid.lock() {
+            *child_pid = Some(child.id());
+        }
+    }
 
     let _ = app.emit("launch-status", serde_json::json!({
         "phase": "running",
@@ -549,6 +781,7 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
         if let Some(state) = app3.try_state::<LaunchState>() {
             if let Ok(mut running) = state.running.lock() { *running = false; }
+            if let Ok(mut child_pid) = state.child_pid.lock() { *child_pid = None; }
         }
         let recent_lines = recent
             .lock()
