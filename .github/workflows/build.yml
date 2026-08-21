@@ -1,4 +1,4 @@
-name: Aqua Client Release
+name: Aqua Release
 
 on:
   push:
