@@ -4,9 +4,10 @@ import { ExternalLink } from 'lucide-react'
 import Toggle from '../../components/ui/Toggle'
 import { useToast } from '../../hooks/useToast'
 import { appActions, useAppStore, type BackgroundChoice } from '../../stores/appStore'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import * as tauri from '../../utils/tauri'
-import { SUPPORTED_LOCALES, useTranslation } from '../../localization'
+import { useTranslation } from '../../useTranslation'
+import { SUPPORTED_LOCALES } from '../../locales/supportedLocales'
 
 const ACCENT_PRESETS = [
   { id: 'aqua', label: 'Aqua', value: '#58dfd1' },
@@ -34,18 +35,18 @@ export default function SettingsPage() {
   const [ram, setRam] = useState(settings?.ram_mb ?? recommendedRam)
   const [showSnapshots, setShowSnapshots] = useState(settings?.show_snapshots ?? false)
   const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(settings?.minimize_on_launch ?? true)
-  const [discordRpc, setDiscordRpc] = useState(false)
-
-  useEffect(() => {
-    setDiscordRpc(window.localStorage.getItem('aqua.discord.rpc') === 'true')
-  }, [])
+  const [discordRpc, setDiscordRpc] = useState(() => window.localStorage.getItem('aqua.discord.rpc') === 'true')
 
   useEffect(() => {
     if (settings) {
-      setRam(settings.ram_mb || recommendedRam)
-      setShowSnapshots(settings.show_snapshots)
-      setMinimizeOnLaunch(settings.minimize_on_launch)
+      const id = window.setTimeout(() => {
+        setRam(settings.ram_mb || recommendedRam)
+        setShowSnapshots(settings.show_snapshots)
+        setMinimizeOnLaunch(settings.minimize_on_launch)
+      }, 0)
+      return () => window.clearTimeout(id)
     }
+    return undefined
   }, [recommendedRam, settings])
 
   const saveSettings = useCallback(async (partial: Partial<tauri.LauncherSettings>) => {

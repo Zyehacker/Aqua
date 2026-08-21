@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getAccount } from '../../utils/tauri'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { useAppStore } from '../../stores/appStore'
 
 const STARTUP_TIMING = { greetingEnd: 1500, loaderEnd: 6500, revealEnd: 8500, finish: 10000, exit: 520 } as const
@@ -46,9 +46,12 @@ export default function StartupSplash() {
   const ready = !loading && stage === 'finish'
   useEffect(() => {
     if (!ready) return undefined
-    setExiting(true)
+    const exitStart = window.setTimeout(() => setExiting(true), 0)
     const timer = window.setTimeout(() => setExiting(false), reduceMotion ? 120 : STARTUP_TIMING.exit)
-    return () => window.clearTimeout(timer)
+    return () => {
+      window.clearTimeout(exitStart)
+      window.clearTimeout(timer)
+    }
   }, [ready, reduceMotion])
 
   const status = useMemo(() => {

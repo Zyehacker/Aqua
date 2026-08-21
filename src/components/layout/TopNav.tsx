@@ -20,7 +20,7 @@ import Button from '../ui/Button'
 import { useToast } from '../../hooks/useToast'
 import { getAccount, getAccountTextures, listen, microsoftLogin, microsoftLogout, type MsaAccount } from '../../utils/tauri'
 import { renderSkinHead } from '../../utils/skinHead'
-import { useTranslation } from '../../localization'
+import { useTranslation } from '../../useTranslation'
 
 type AccountInfo = Pick<MsaAccount, 'username' | 'uuid'> & { authenticated: boolean }
 

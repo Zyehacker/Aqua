@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, ChevronRight, CircleUserRound, Cpu, Gamepad2, LogIn, X } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import Button from '../ui/Button'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { getAccount, microsoftLogin } from '../../utils/tauri'
 import { useToast } from '../../hooks/useToast'
 
@@ -12,14 +12,12 @@ export default function SetupWizard() {
   const toast = useToast()
   const { settings, instances, javaRuntimes, loading, detectJava } = useLauncherData()
   const [account, setAccount] = useState<{ username: string } | null>(null)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(() => window.localStorage.getItem(SETUP_KEY) !== 'true')
   const [step, setStep] = useState(0)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (loading) return
-    const completed = window.localStorage.getItem(SETUP_KEY) === 'true'
-    setOpen(!completed)
     void getAccount().then((next) => setAccount(next?.username ? { username: next.username } : null)).catch(() => setAccount(null))
   }, [loading])
 

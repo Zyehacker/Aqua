@@ -1,5 +1,4 @@
-import { useMemo } from 'react'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { useAppStore } from '../../stores/appStore'
 
 const MESSAGES = [
@@ -24,7 +23,7 @@ function AquaMark() {
 export default function StartupSplash() {
   const { loading, error } = useLauncherData()
   const reduceMotion = useAppStore((state) => state.reduceMotion)
-  const message = useMemo(() => MESSAGES[Math.floor(Math.random() * MESSAGES.length)], [])
+  const [message] = MESSAGES
   const status = error ? 'Launcher data needs attention' : loading ? 'Loading launcher data...' : 'Preparing Home...'
 
   return (

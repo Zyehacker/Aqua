@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/appStore'
 
 const BACKGROUNDS = [1, 2, 3, 4, 5].map((number) => `/backgrounds/background${number}.png`)
@@ -7,12 +7,14 @@ export default function AppBackground() {
   const choice = useAppStore((state) => state.background)
   const [active, setActive] = useState(0)
   const [previous, setPrevious] = useState<number | null>(null)
+  const activeRef = useRef(active)
 
   useEffect(() => {
     const next = choice === 'random' ? Math.floor(Math.random() * BACKGROUNDS.length) : Math.max(0, Number(choice.replace('background', '')) - 1)
     const image = new Image()
     image.onload = () => {
-      setPrevious(active)
+      setPrevious(activeRef.current)
+      activeRef.current = next
       setActive(next)
       window.setTimeout(() => setPrevious(null), 500)
     }

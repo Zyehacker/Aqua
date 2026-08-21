@@ -1,5 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as tauri from '../utils/tauri'
+import { LauncherDataContext } from './launcherDataContext'
 
 const DEFAULT_SETTINGS: tauri.LauncherSettings = {
   language: 'en',
@@ -7,17 +8,6 @@ const DEFAULT_SETTINGS: tauri.LauncherSettings = {
   java_path: null, java_runtime: null, mc_dir: null, instance_id: null, ram_mb: 2048,
   jvm_args: '', show_snapshots: false, minimize_on_launch: true,
 }
-
-type LauncherData = {
-  settings: tauri.LauncherSettings | null; instances: tauri.BackendInstance[]; versions: tauri.RemoteVersion[]
-  jvm: tauri.JvmSuggestion | null; javaPath: string | null; javaRuntimes: tauri.JavaRuntime[]
-  loading: boolean; error: string | null; busy: string | null; activeInstanceId: string | null
-  activeInstance: tauri.BackendInstance | null; refresh: () => Promise<void>
-  updateSettings: (partial: Partial<tauri.LauncherSettings>) => Promise<tauri.LauncherSettings | null>
-  selectInstance: (id: string | null) => Promise<void>; detectJava: () => Promise<string | null>
-}
-
-const LauncherDataContext = createContext<LauncherData | null>(null)
 
 export function LauncherDataProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<tauri.LauncherSettings | null>(null)
@@ -59,7 +49,10 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    const id = window.setTimeout(() => { void refresh() }, 0)
+    return () => window.clearTimeout(id)
+  }, [refresh])
 
   const updateSettings = useCallback(async (partial: Partial<tauri.LauncherSettings>) => {
     const current = settings ?? (await tauri.getSettings()) ?? DEFAULT_SETTINGS
@@ -100,10 +93,4 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({ settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava }), [settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava])
   return <LauncherDataContext.Provider value={value}>{children}</LauncherDataContext.Provider>
-}
-
-export function useLauncherData() {
-  const value = useContext(LauncherDataContext)
-  if (!value) throw new Error('useLauncherData must be used inside LauncherDataProvider')
-  return value
 }

@@ -27,7 +27,7 @@ import * as tauri from '../../utils/tauri'
 import type { ContentCategory, ContentItem, ContentPlatform } from '../../types'
 import { cn } from '../../utils/cn'
 import { formatInstanceHeading } from '../../utils/instanceDisplay'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 
 const CATEGORY_META: Record<
   Exclude<ContentCategory, 'overview'>,

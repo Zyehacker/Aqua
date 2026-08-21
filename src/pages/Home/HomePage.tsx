@@ -4,7 +4,7 @@ import { useEffect, useState, type CSSProperties } from 'react'
 import Button from '../../components/ui/Button'
 import Skeleton from '../../components/ui/Skeleton'
 import { useToast } from '../../hooks/useToast'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { formatInstanceHeading } from '../../utils/instanceDisplay'
 import * as tauri from '../../utils/tauri'
 

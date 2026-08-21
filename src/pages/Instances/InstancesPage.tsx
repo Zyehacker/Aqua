@@ -8,7 +8,7 @@ import Card from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import { formatInstanceDisplayName, formatInstanceHeading } from '../../utils/instanceDisplay'
-import { useLauncherData } from '../../hooks/useLauncherData'
+import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { open, save } from '@tauri-apps/plugin-dialog'
 
 type LoaderOption = { version: string; stable?: boolean; recommended?: boolean }
@@ -90,7 +90,7 @@ export default function InstancesPage() {
     } catch (error) {
       toast.pushToast(error instanceof Error ? error.message : 'Export failed.', 'error')
     }
-  }, [activeInstanceId, instances, settings?.mc_dir, toast])
+  }, [activeInstanceId, instances, settings, toast])
 
   const loadInstances = useCallback(async () => {
     setLoading(true)
@@ -102,7 +102,7 @@ export default function InstancesPage() {
     } finally {
       setLoading(false)
     }
-  }, [settings?.mc_dir])
+  }, [settings])
 
   const importPackage = useCallback(async () => {
     try {
@@ -115,7 +115,7 @@ export default function InstancesPage() {
     } catch (error) {
       toast.pushToast(error instanceof Error ? error.message : 'Import failed.', 'error')
     }
-  }, [loadInstances, refreshLauncher, settings?.mc_dir, toast])
+  }, [loadInstances, refreshLauncher, settings, toast])
 
   useEffect(() => {
     const id = window.setTimeout(() => { void loadInstances() }, 0)
@@ -210,7 +210,7 @@ export default function InstancesPage() {
     } catch (e) {
       toast.pushToast(e instanceof Error ? e.message : `Unable to delete ${name}.`, 'error')
     }
-  }, [activeInstanceId, loadInstances, refreshLauncher, selectInstance, settings?.mc_dir, toast])
+  }, [activeInstanceId, loadInstances, refreshLauncher, selectInstance, settings, toast])
 
   const duplicateInst = useCallback(async (id: string, displayLabel: string, copyName: string) => {
     try {
@@ -220,7 +220,7 @@ export default function InstancesPage() {
     } catch (e) {
       toast.pushToast(e instanceof Error ? e.message : `Unable to duplicate ${displayLabel}.`, 'error')
     }
-  }, [loadInstances, settings?.mc_dir, toast])
+  }, [loadInstances, settings, toast])
 
   const openEdit = useCallback((instance: BackendInstance) => {
     setEditInstance(instance)
@@ -228,7 +228,7 @@ export default function InstancesPage() {
     setEditMemory(String(instance.memory_mb ?? settings?.ram_mb ?? 2048))
     setEditJavaArgs(instance.java_args ?? settings?.jvm_args ?? '')
     setEditGameDir(instance.game_dir ?? '')
-  }, [settings?.jvm_args, settings?.ram_mb])
+  }, [settings])
 
   const saveEdit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -247,7 +247,7 @@ export default function InstancesPage() {
     } catch (error) {
       toast.pushToast(error instanceof Error ? error.message : 'Unable to save instance settings.', 'error')
     }
-  }, [editGameDir, editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings?.mc_dir, toast])
+  }, [editGameDir, editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
 
   const filteredInstances = useMemo(() => {
     const query = instanceQuery.trim().toLowerCase()
@@ -308,7 +308,7 @@ export default function InstancesPage() {
     } catch (e) {
       toast.pushToast(e instanceof Error ? e.message : `Unable to open folder for ${name}.`, 'error')
     }
-  }, [settings?.mc_dir, toast])
+  }, [settings, toast])
 
   return (
     <div className="page">

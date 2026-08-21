@@ -1,5 +1,7 @@
-import { createContext, useContext, useMemo, type ReactNode } from 'react'
-import { useLauncherData } from './hooks/useLauncherData'
+import { useEffect, useMemo, type ReactNode } from 'react'
+import { useLauncherData } from './hooks/useLauncherDataHook'
+import { LocalizationContext } from './localizationContext'
+import { SUPPORTED_LOCALES } from './locales/supportedLocales'
 import en from './locales/en.json'
 import es from './locales/es.json'
 import zhCN from './locales/zh-CN.json'
@@ -11,22 +13,8 @@ import de from './locales/de.json'
 import nl from './locales/nl.json'
 import sv from './locales/sv.json'
 
-export const SUPPORTED_LOCALES = [
-  { id: 'en', nativeName: 'English' },
-  { id: 'es', nativeName: 'Español' },
-  { id: 'zh-CN', nativeName: '简体中文' },
-  { id: 'ru', nativeName: 'Русский' },
-  { id: 'hi', nativeName: 'हिन्दी' },
-  { id: 'ja', nativeName: '日本語' },
-  { id: 'no', nativeName: 'Norsk' },
-  { id: 'de', nativeName: 'Deutsch' },
-  { id: 'nl', nativeName: 'Nederlands' },
-  { id: 'sv', nativeName: 'Svenska' },
-] as const
-
 const dictionaries: Record<string, Record<string, string>> = { en, es, 'zh-CN': zhCN, ru, hi, ja, no, de, nl, sv }
 type LocalizationContext = { language: string; setLanguage: (language: string) => Promise<void>; t: (key: string) => string }
-const LocalizationContext = createContext<LocalizationContext | null>(null)
 
 export function LocalizationProvider({ children }: { children: ReactNode }) {
   const { settings, updateSettings } = useLauncherData()
@@ -46,12 +34,8 @@ export function LocalizationProvider({ children }: { children: ReactNode }) {
       return value
     },
   }), [language, updateSettings])
-  document.documentElement.lang = language
+  useEffect(() => {
+    document.documentElement.lang = language
+  }, [language])
   return <LocalizationContext.Provider value={value}>{children}</LocalizationContext.Provider>
-}
-
-export function useTranslation() {
-  const value = useContext(LocalizationContext)
-  if (!value) throw new Error('useTranslation must be used inside LocalizationProvider')
-  return value
 }
