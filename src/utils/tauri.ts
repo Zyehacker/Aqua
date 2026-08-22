@@ -40,6 +40,7 @@ export type LauncherSettings = {
   instance_id?: string | null
   ram_mb: number
   jvm_args: string
+  performance_profile: 'maximum' | 'balanced' | 'quality' | string
   show_snapshots: boolean
   minimize_on_launch: boolean
   window_x?: number | null
@@ -181,6 +182,20 @@ export async function generateOptimalArgs() {
   return invoke<JvmSuggestion>('generate_optimal_args')
 }
 
+export type HardwareInfo = {
+  cpu: string
+  cores: number
+  memory_mb: number
+  gpu: string
+  operating_system: string
+  classification: 'low' | 'mid' | 'high' | string
+  explanation: string
+}
+
+export async function detectHardware() {
+  return invoke<HardwareInfo>('detect_hardware')
+}
+
 export async function listInstances(mcDir?: string | null) {
   return invoke<BackendInstance[]>('list_instances', { mcDir })
 }
@@ -237,6 +252,14 @@ export async function updateInstance(instanceId: string, update: Record<string, 
   return invoke<BackendInstance>('update_instance', { instanceId, update, mcDir })
 }
 
+export async function validateInstance(instanceId: string, mcDir?: string | null) {
+  return invoke<{ healthy: boolean; issues: Array<{ kind: string; path: string; message: string }> }>('validate_instance', { instanceId, mcDir })
+}
+
+export async function repairInstance(instanceId: string, mcDir?: string | null) {
+  return invoke<BackendInstance>('repair_instance', { instanceId, mcDir })
+}
+
 export async function duplicateInstance(instanceId: string, newName: string, mcDir?: string | null) {
   return invoke<string>('duplicate_instance', { instanceId, newName, mcDir })
 }
@@ -268,7 +291,6 @@ export async function launchInstance(instance?: string | BackendInstance) {
   }
 
   const result = await invoke<void>('launch_minecraft', { settings: launchSettings })
-  await setSingleplayerPresence(launchSettings.version).catch(() => null)
   if (typeof instance === 'object') {
     await markInstancePlayed(instance.id, settings.mc_dir).catch(() => null)
   } else if (instance) {
@@ -457,6 +479,7 @@ export async function installModrinthProject(
   mcDir?: string | null,
   requestedName?: string | null,
   iconUrl?: string | null,
+  worldPath?: string | null,
 ): Promise<string | null> {
   return invoke<string>('install_modrinth_project', {
     projectId,
@@ -468,6 +491,7 @@ export async function installModrinthProject(
     mcDir,
     requestedName,
     iconUrl,
+    worldPath,
   })
 }
 

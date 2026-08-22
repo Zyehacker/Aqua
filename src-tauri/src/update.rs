@@ -2,8 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
+
+use crate::launch::LaunchState;
 
 static IS_UPDATING: AtomicBool = AtomicBool::new(false);
 
@@ -69,7 +71,9 @@ async fn run_update_pipeline(app: &AppHandle) -> Result<(), String> {
     update
         .download_and_install(
             move |chunk_length, content_length| {
-                let current_downloaded = downloaded_clone.fetch_add(chunk_length as u64, Ordering::SeqCst) + chunk_length as u64;
+                let current_downloaded = downloaded_clone
+                    .fetch_add(chunk_length as u64, Ordering::SeqCst)
+                    + chunk_length as u64;
                 let percent = content_length.map(|total| {
                     if total > 0 {
                         ((current_downloaded as f64 / total as f64) * 100.0).clamp(0.0, 100.0)
@@ -112,16 +116,25 @@ pub fn start_updater_check_loop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         // Delay initial startup check slightly to ensure UI is ready
         tokio::time::sleep(Duration::from_secs(3)).await;
-        if let Err(err) = check_for_update(app.clone()).await {
-            eprintln!("Periodic update check error: {}", err);
+        if !minecraft_running(&app) {
+            if let Err(err) = check_for_update(app.clone()).await {
+                eprintln!("Periodic update check error: {}", err);
+            }
         }
 
         loop {
             tokio::time::sleep(Duration::from_secs(60 * 60 * 6)).await;
-            if let Err(err) = check_for_update(app.clone()).await {
-                eprintln!("Periodic update check error: {}", err);
+            if !minecraft_running(&app) {
+                if let Err(err) = check_for_update(app.clone()).await {
+                    eprintln!("Periodic update check error: {}", err);
+                }
             }
         }
     });
 }
 
+fn minecraft_running(app: &AppHandle) -> bool {
+    app.try_state::<LaunchState>()
+        .and_then(|state| state.running.lock().ok().map(|running| *running))
+        .unwrap_or(false)
+}

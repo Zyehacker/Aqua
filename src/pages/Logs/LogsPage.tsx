@@ -4,6 +4,7 @@ import Button from '../../components/ui/Button'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import * as tauri from '../../utils/tauri'
+import { useTranslation } from '../../useTranslation'
 
 type LogEntry = {
   timestamp?: string
@@ -42,6 +43,7 @@ function formatTimestamp(timestamp?: string) {
 }
 
 export default function LogsPage() {
+  const { t } = useTranslation()
   const toast = useToast()
   const [entries, setEntries] = useState<LogEntry[]>([])
   const [filter, setFilter] = useState<LogFilter>('all')
@@ -49,11 +51,11 @@ export default function LogsPage() {
   const refresh = useCallback(async (showToast = false) => {
     try {
       setEntries(parseLogs(await tauri.readLogs()))
-      if (showToast) toast.pushToast('Logs refreshed', 'success')
+      if (showToast) toast.pushToast(t('logs.refreshed'), 'success')
     } catch (error) {
       if (showToast) toast.pushToast(error instanceof Error ? error.message : 'Unable to read logs.', 'error')
     }
-  }, [toast])
+  }, [t, toast])
 
   useEffect(() => {
     let active = true
@@ -72,16 +74,16 @@ export default function LogsPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Logs</h1>
-          <p className="page-subtitle">Recent launcher and game output</p>
+          <h1 className="page-title">{t('logs.title')}</h1>
+          <p className="page-subtitle">{t('logs.subtitle')}</p>
         </div>
         <div className="log-toolbar">
           <select aria-label="Filter logs" value={filter} onChange={(event) => setFilter(event.target.value as LogFilter)}>
-            <option value="all">All levels</option>
-            <option value="info">Info</option>
-            <option value="success">Success</option>
-            <option value="warning">Warning</option>
-            <option value="error">Error</option>
+            <option value="all">{t('common.allLevels')}</option>
+            <option value="info">{t('common.info')}</option>
+            <option value="success">{t('common.success')}</option>
+            <option value="warning">{t('common.warning')}</option>
+            <option value="error">{t('common.error')}</option>
           </select>
           <Button variant="ghost" size="sm" onClick={() => void refresh(true)}>
             <RotateCcw size={13} />
@@ -93,8 +95,8 @@ export default function LogsPage() {
       {visibleEntries.length === 0 ? (
         <div className="empty-shell">
           <EmptyState
-            title={entries.length === 0 ? 'No logs yet' : 'No matching logs'}
-            description={entries.length === 0 ? 'Launcher activity will appear here after you use Aqua.' : 'Try a different log level.'}
+            title={entries.length === 0 ? t('common.noLogs') : t('common.noMatchingLogs')}
+            description={entries.length === 0 ? t('logs.empty') : t('logs.noMatch')}
             icon={<FileText size={20} />}
           />
         </div>

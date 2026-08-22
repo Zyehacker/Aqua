@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: tauri.LauncherSettings = {
   username: 'Player', version: '', loader_type: 'vanilla', fabric_loader_version: null,
   java_path: null, java_runtime: null, mc_dir: null, instance_id: null, ram_mb: 2048,
   jvm_args: '', show_snapshots: false, minimize_on_launch: true,
+  performance_profile: 'balanced',
 }
 
 export function LauncherDataProvider({ children }: { children: ReactNode }) {
@@ -85,10 +86,21 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
   const activeInstanceId = settings?.instance_id ?? instances[0]?.id ?? null
   const activeInstance = useMemo(() => instances.find((instance) => instance.id === activeInstanceId) ?? instances[0] ?? null, [activeInstanceId, instances])
   useEffect(() => {
-    if (loading || window.localStorage.getItem('aqua.discord.rpc') !== 'true') return
-    void tauri.startRichPresence()
-      .then(() => tauri.setIdlePresence())
-      .catch(() => undefined)
+    if (loading || window.localStorage.getItem('aqua.discord.rpc') === 'false') return
+    let active = true
+    let unsubscribe: (() => void) | null = null
+    const reconnect = () => {
+      if (active) void tauri.startRichPresence().then(() => tauri.setIdlePresence()).catch(() => undefined)
+    }
+    void tauri.listen<{ message?: string }>('richpresence-unavailable', (event) => {
+      if (active && event.message) setError(event.message)
+    }).then((cleanup) => {
+      if (active) unsubscribe = cleanup
+      else cleanup?.()
+    })
+    reconnect()
+    const timer = window.setInterval(reconnect, 30_000)
+    return () => { active = false; unsubscribe?.(); window.clearInterval(timer) }
   }, [loading])
 
   const value = useMemo(() => ({ settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava }), [settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava])

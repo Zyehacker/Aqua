@@ -86,6 +86,7 @@ function setState(partial: Partial<AppState>) {
   }
   if (partial.density) {
     document.documentElement.dataset.density = partial.density
+    document.documentElement.style.setProperty('--space-unit', partial.density === 'compact' ? '0.82' : '1')
     persist('aqua.density', partial.density)
   }
   emit()

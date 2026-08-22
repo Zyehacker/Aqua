@@ -35,7 +35,8 @@ export default function SettingsPage() {
   const [ram, setRam] = useState(settings?.ram_mb ?? recommendedRam)
   const [showSnapshots, setShowSnapshots] = useState(settings?.show_snapshots ?? false)
   const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(settings?.minimize_on_launch ?? true)
-  const [discordRpc, setDiscordRpc] = useState(() => window.localStorage.getItem('aqua.discord.rpc') === 'true')
+  const [discordRpc, setDiscordRpc] = useState(() => window.localStorage.getItem('aqua.discord.rpc') !== 'false')
+  const [hardware, setHardware] = useState<tauri.HardwareInfo | null>(null)
 
   useEffect(() => {
     if (settings) {
@@ -52,11 +53,11 @@ export default function SettingsPage() {
   const saveSettings = useCallback(async (partial: Partial<tauri.LauncherSettings>) => {
     try {
       await updateSettings(partial)
-      toast.pushToast('Settings saved', 'success')
+      toast.pushToast(t('settings.saved'), 'success')
     } catch (err) {
       toast.pushToast(err instanceof Error ? err.message : 'Save failed.', 'error')
     } finally { /* settings state is updated by the shared launcher store */ }
-  }, [toast, updateSettings])
+  }, [t, toast, updateSettings])
 
   const javaLabel = settings?.java_path ?? settings?.java_runtime ?? javaRuntimes[0]?.path ?? 'Not detected'
   const mcDirLabel = settings?.mc_dir ?? 'Default'
@@ -64,14 +65,34 @@ export default function SettingsPage() {
   return (
     <div className="page page-narrow">
       <div className="page-header">
-        <h1 className="page-title">Settings</h1>
+        <h1 className="page-title">{t('settings.title')}</h1>
       </div>
 
       <div className="settings-sections">
         {/* General */}
         <section className="settings-section">
-          <h2 className="settings-section__title">General</h2>
+          <h2 className="settings-section__title">{t('settings.general')}</h2>
           <div className="settings-rows">
+            <div className="settings-row">
+              <div className="settings-row__label">
+                <strong>Performance profile</strong>
+                <span>{hardware ? `${hardware.classification === 'low' ? 'Low-end' : hardware.classification === 'mid' ? 'Mid-range' : 'High-end'} hardware · ${hardware.explanation}` : 'Choose a conservative preset for your hardware'}</span>
+              </div>
+              <div className="settings-row__control">
+                <select
+                  value={settings?.performance_profile ?? 'balanced'}
+                  aria-label="Performance profile"
+                  onChange={(event) => void saveSettings({ performance_profile: event.target.value })}
+                >
+                  <option value="maximum">Maximum FPS</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="quality">Quality</option>
+                </select>
+                <button type="button" className="settings-btn" onClick={() => void tauri.detectHardware().then(setHardware)}>
+                  Analyze hardware
+                </button>
+              </div>
+            </div>
             <div className="settings-row">
               <div className="settings-row__label">
                 <strong>{t('settings.language')}</strong>
@@ -87,10 +108,10 @@ export default function SettingsPage() {
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Theme</strong>
+                <strong>{t('settings.theme')}</strong>
               </div>
               <div className="settings-row__control">
-                <span className="settings-val">{theme === 'dark' ? 'Dark' : 'Dim'}</span>
+                <span className="settings-val">{theme === 'dark' ? t('settings.dark') : t('settings.dim')}</span>
                 <button
                   type="button"
                   className="settings-btn"
@@ -98,13 +119,13 @@ export default function SettingsPage() {
                     appActions.toggleTheme()
                     toast.pushToast('Theme updated', 'success')
                   }}
-                >
-                  Switch
+                  >
+                  {t('settings.switch')}
                 </button>
               </div>
             </div>
             <div className="settings-row settings-row--backgrounds">
-              <div className="settings-row__label"><strong>Background</strong><span>Choose from the available Aqua environments</span></div>
+              <div className="settings-row__label"><strong>{t('settings.background')}</strong><span>{t('settings.backgroundDescription')}</span></div>
               <div className="background-picker">
                 {(['background1', 'background2', 'background3', 'background4', 'background5', 'random'] as BackgroundChoice[]).map((choice) => (
                   <button key={choice} type="button" className={background === choice ? 'active' : ''} onClick={() => appActions.setBackground(choice)} aria-label={choice === 'random' ? 'Random background' : `Background ${choice.replace('background', '')}`}>
@@ -115,8 +136,8 @@ export default function SettingsPage() {
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Accent color</strong>
-                <span>Customize the Aqua highlight across the launcher</span>
+                <strong>{t('settings.accent')}</strong>
+                <span>{t('settings.accentDescription')}</span>
               </div>
               <div className="settings-row__control settings-row__control--wide" style={{ justifyContent: 'flex-end', flexWrap: 'wrap' }}>
                 {ACCENT_PRESETS.map((preset) => (
@@ -146,32 +167,32 @@ export default function SettingsPage() {
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Reduce motion</strong>
-                <span>Minimize decorative movement and transitions</span>
+                <strong>{t('settings.reduceMotion')}</strong>
+                <span>{t('settings.reduceMotionDescription')}</span>
               </div>
               <Toggle checked={reduceMotion} onChange={(next) => appActions.setReduceMotion(next)} label="Reduce motion" />
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Interface density</strong>
+                <strong>{t('settings.density')}</strong>
                 <span>Comfortable spacing or tighter compact mode</span>
               </div>
               <div className="settings-row__control">
                 <button type="button" className="settings-btn" onClick={() => appActions.setDensity(density === 'comfortable' ? 'compact' : 'comfortable')}>
-                  {density === 'comfortable' ? 'Comfortable' : 'Compact'}
+                  {density === 'comfortable' ? t('settings.comfortable') : t('settings.compact')}
                 </button>
               </div>
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>UI sounds</strong>
-                <span>Subtle feedback for launch and navigation actions</span>
+                <strong>{t('settings.uiSounds')}</strong>
+                <span>{t('settings.uiSoundsDescription')}</span>
               </div>
               <Toggle checked={uiSounds} onChange={(next) => appActions.setUiSounds(next)} label="UI sounds" />
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Sound volume</strong>
+                <strong>{t('settings.volume')}</strong>
                 <span>{soundVolume.toFixed(2)} · quieter, tasteful feedback</span>
               </div>
               <div className="settings-row__control settings-row__control--wide">
@@ -180,8 +201,8 @@ export default function SettingsPage() {
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>Discord rich presence</strong>
-                <span>Show current instance in Discord status</span>
+                <strong>{t('settings.discord')}</strong>
+                <span>{t('settings.discordDescription')}</span>
               </div>
               <Toggle checked={discordRpc} onChange={(next) => void (async () => {
                 try {
@@ -202,7 +223,7 @@ export default function SettingsPage() {
 
         {/* Game */}
         <section className="settings-section">
-          <h2 className="settings-section__title">Game</h2>
+          <h2 className="settings-section__title">{t('settings.game')}</h2>
           <div className="settings-rows">
             <div className="settings-row">
               <div className="settings-row__label">
@@ -251,7 +272,7 @@ export default function SettingsPage() {
 
         {/* Java */}
         <section className="settings-section">
-          <h2 className="settings-section__title">Java</h2>
+          <h2 className="settings-section__title">{t('settings.java')}</h2>
           <div className="settings-rows">
             <div className="settings-row">
               <div className="settings-row__label">
@@ -287,7 +308,7 @@ export default function SettingsPage() {
 
         {/* Advanced */}
         <section className="settings-section">
-          <h2 className="settings-section__title">Advanced</h2>
+          <h2 className="settings-section__title">{t('settings.advanced')}</h2>
           <div className="settings-rows">
             <div className="settings-row">
               <div className="settings-row__label">

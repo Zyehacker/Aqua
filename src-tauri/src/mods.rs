@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose, Engine};
@@ -151,6 +152,7 @@ fn validate_instance_name(input: &str) -> Result<String, String> {
 }
 
 static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static INSTANCE_CREATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) fn new_instance_id(root: &Path) -> String {
     loop {
@@ -160,6 +162,10 @@ pub(crate) fn new_instance_id(root: &Path) -> String {
             return id;
         }
     }
+}
+
+fn creation_lock() -> &'static Mutex<()> {
+    INSTANCE_CREATION_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn metadata_path(root: &Path, instance_id: &str) -> PathBuf {
@@ -227,6 +233,98 @@ pub fn storage_integrity_check(mc_dir: Option<String>) -> Result<StorageIntegrit
         }
     }
     Ok(StorageIntegrityReport { healthy: issues.is_empty(), issues })
+}
+
+#[tauri::command]
+pub fn validate_instance(mc_dir: Option<String>, instance_id: String) -> Result<StorageIntegrityReport, String> {
+    let root = aqua_root(mc_dir)?;
+    let dir = instance_dir(&root, &instance_id);
+    let metadata_file = dir.join("instance.json");
+    let mut issues = Vec::new();
+    if !dir.exists() {
+        issues.push(StorageIssue { kind: "missing_instance_directory".into(), path: dir.display().to_string(), message: "The instance directory is missing.".into() });
+        return Ok(StorageIntegrityReport { healthy: false, issues });
+    }
+    let raw = std::fs::read_to_string(&metadata_file).map_err(|error| format!("Unable to read instance metadata: {error}"))?;
+    let metadata = serde_json::from_str::<InstanceMetadata>(&raw).map_err(|error| format!("Instance metadata is corrupted: {error}"))?;
+    if metadata.id != instance_id { issues.push(StorageIssue { kind: "id_mismatch".into(), path: metadata_file.display().to_string(), message: "Metadata ID does not match the instance directory.".into() }); }
+    if metadata.name.trim().is_empty() || metadata.mc_version.trim().is_empty() { issues.push(StorageIssue { kind: "incomplete_metadata".into(), path: metadata_file.display().to_string(), message: "Instance name and Minecraft version are required.".into() }); }
+    if !matches!(metadata.loader.as_str(), "vanilla" | "fabric" | "forge") { issues.push(StorageIssue { kind: "invalid_loader".into(), path: metadata_file.display().to_string(), message: format!("Unsupported loader '{}'.", metadata.loader) }); }
+    for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks"] {
+        if !dir.join(folder).exists() { issues.push(StorageIssue { kind: "missing_instance_folder".into(), path: dir.join(folder).display().to_string(), message: format!("Required instance folder '{folder}' is missing.") }); }
+    }
+    let version_json = root.join("versions").join(&metadata.installed_version_id).join(format!("{}.json", metadata.installed_version_id));
+    if !version_json.exists() { issues.push(StorageIssue { kind: "missing_minecraft_metadata".into(), path: version_json.display().to_string(), message: "Installed Minecraft version metadata is missing.".into() }); }
+    Ok(StorageIntegrityReport { healthy: issues.is_empty(), issues })
+}
+
+#[tauri::command]
+pub async fn repair_instance(
+    app: AppHandle,
+    mc_dir: Option<String>,
+    instance_id: String,
+) -> Result<InstanceInfo, String> {
+    let root = aqua_root(mc_dir)?;
+    let dir = instance_dir(&root, &instance_id);
+    let metadata_file = dir.join("instance.json");
+    if !dir.exists() { return Err(format!("Instance directory not found: {instance_id}")); }
+    let raw = std::fs::read_to_string(&metadata_file).unwrap_or_default();
+    let value = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|_| serde_json::json!({}));
+    let backup = dir.join(format!("instance.json.backup.{}", now_secs()));
+    if metadata_file.exists() { std::fs::copy(&metadata_file, &backup).map_err(|error| format!("Unable to back up corrupted metadata: {error}"))?; }
+    let text = |key: &str, fallback: String| value.get(key).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(String::from).unwrap_or(fallback);
+    let now = now_secs();
+    let loader = match text("loader", "vanilla".into()).as_str() {
+        "fabric" | "forge" => text("loader", "vanilla".into()),
+        _ => "vanilla".into(),
+    };
+    let metadata = InstanceMetadata {
+        id: instance_id.clone(),
+        name: text("name", format!("Minecraft {instance_id}")),
+        mc_version: text("mc_version", text("version", "unknown".into())),
+        loader,
+        loader_version: value.get("loader_version").and_then(|v| v.as_str()).map(String::from),
+        loader_mode: text("loader_mode", "automatic".into()),
+        installed_version_id: text("installed_version_id", text("mc_version", instance_id.clone())),
+        game_dir: value.get("game_dir").and_then(|v| v.as_str()).map(String::from),
+        java_path: value.get("java_path").and_then(|v| v.as_str()).map(String::from),
+        java_runtime: value.get("java_runtime").and_then(|v| v.as_str()).map(String::from),
+        java_version: value.get("java_version").and_then(|v| v.as_str()).map(String::from),
+        memory_mb: value.get("memory_mb").and_then(|v| v.as_u64()).map(|v| v as u32),
+        java_args: value.get("java_args").and_then(|v| v.as_str()).map(String::from),
+        install_state: Some("needs_repair".into()),
+        created_at: value.get("created_at").and_then(|v| v.as_u64()).unwrap_or(now),
+        updated_at: now,
+        last_played_at: value.get("last_played_at").and_then(|v| v.as_u64()),
+    };
+    for folder in ["mods", "resourcepacks", "shaderpacks", "datapacks"] {
+        std::fs::create_dir_all(dir.join(folder)).map_err(|error| {
+            format!("Unable to restore instance folder '{folder}': {error}")
+        })?;
+    }
+    if let Err(error) = write_metadata(&root, &metadata) {
+        if backup.exists() { let _ = std::fs::copy(&backup, &metadata_file); }
+        return Err(format!("Unable to repair instance metadata: {error}"));
+    }
+
+    let (installed_version_id, loader_version) = crate::install::install_version(
+        app,
+        metadata.loader.clone(),
+        metadata.mc_version.clone(),
+        metadata.loader_version.clone(),
+        Some(root.to_string_lossy().to_string()),
+    )
+    .await
+    .map_err(|error| format!("Instance metadata repaired, but installation could not be restored: {error}"))?;
+    let repaired = InstanceMetadata {
+        installed_version_id,
+        loader_version,
+        install_state: Some("installed".into()),
+        updated_at: now_secs(),
+        ..metadata
+    };
+    write_metadata(&root, &repaired)?;
+    Ok(instance_info(&root, repaired))
 }
 
 pub(crate) fn read_metadata(root: &Path, instance_id: &str) -> Option<InstanceMetadata> {
@@ -381,51 +479,6 @@ pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, Strin
                     out.push(instance_info(&root, meta));
                 }
             }
-        }
-    }
-
-    let versions_dir = root.join("versions");
-    if let Ok(entries) = std::fs::read_dir(&versions_dir) {
-        for e in entries.flatten() {
-            if !e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let id = e.file_name().to_string_lossy().into_owned();
-            let json = e.path().join(format!("{}.json", &id));
-            if !json.exists() {
-                continue;
-            }
-            if out.iter().any(|item| item.installed_version_id == id || item.id == id) {
-                continue;
-            }
-
-            let loader = if id.contains("forge") {
-                "forge"
-            } else if id.starts_with("fabric-loader-") {
-                "fabric"
-            } else {
-                "vanilla"
-            };
-            let meta = InstanceMetadata {
-                id: id.clone(),
-                name: id.clone(),
-                mc_version: id.clone(),
-                loader: loader.to_string(),
-                loader_version: None,
-                loader_mode: "manual".to_string(),
-                installed_version_id: id,
-                game_dir: None,
-                java_path: None,
-                java_runtime: None,
-                java_version: None,
-                memory_mb: None,
-                java_args: None,
-                install_state: Some("installed".to_string()),
-                created_at: 0,
-                updated_at: 0,
-                last_played_at: None,
-            };
-            out.push(instance_info(&root, meta));
         }
     }
 
@@ -598,27 +651,31 @@ pub fn rename_instance(
     new_instance_id: String,
 ) -> Result<(), String> {
     let root = aqua_root(mc_dir)?;
-    let profiles = root.join("profiles");
-    let legacy = root.join("instances");
-    let old_path = if profiles.join(&old_instance_id).exists() {
-        profiles.join(&old_instance_id)
-    } else if legacy.join(&old_instance_id).exists() {
-        legacy.join(&old_instance_id)
-    } else {
-        return Err(format!("Instance folder not found: {old_instance_id}"));
-    };
-
-    let new_path = if old_path.starts_with(&profiles) {
-        profiles.join(&new_instance_id)
-    } else {
-        legacy.join(&new_instance_id)
-    };
+    let layouts = [
+        root.join("aqua_blobs").join("profiles"),
+        root.join("profiles"),
+        root.join("instances"),
+    ];
+    let (old_path, layout_root) = layouts
+        .iter()
+        .map(|layout| (layout.join(&old_instance_id), layout))
+        .find(|(path, _)| path.is_dir())
+        .ok_or_else(|| format!("Instance folder not found: {old_instance_id}"))?;
+    let new_path = layout_root.join(&new_instance_id);
 
     if new_path.exists() {
         return Err(format!("Target instance folder already exists: {new_instance_id}"));
     }
 
     std::fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+    let metadata_file = new_path.join("instance.json");
+    if metadata_file.exists() {
+        let raw = std::fs::read_to_string(&metadata_file).map_err(|e| e.to_string())?;
+        let mut metadata: InstanceMetadata = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        metadata.id = new_instance_id;
+        metadata.updated_at = now_secs();
+        atomic_write(&metadata_file, serde_json::to_string_pretty(&metadata).map_err(|e| e.to_string())?.as_bytes())?;
+    }
     Ok(())
 }
 
@@ -671,45 +728,59 @@ pub async fn create_instance(
     fabric_loader_version: Option<String>,
     mc_dir: Option<String>,
 ) -> Result<String, String> {
-    let root = aqua_root(mc_dir.clone())?;
-    let instance_name = validate_instance_name(&instance_name)?;
-    let loader_mode = if fabric_loader_version.as_deref().unwrap_or_default().trim().is_empty() {
-        "automatic".to_string()
-    } else {
-        "manual".to_string()
-    };
-    let id = new_instance_id(&root);
-    let inst = instance_dir(&root, &id);
-    if metadata_path(&root, &id).exists() {
-        return Err(format!("Instance already exists: {id}"));
-    }
-    // Create standard instance folders
-    std::fs::create_dir_all(inst.join("mods")).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(inst.join("resourcepacks")).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(inst.join("shaderpacks")).map_err(|e| e.to_string())?;
+    let (root, instance_name, loader_mode, id, created_at) = {
+        let _creation_guard = creation_lock()
+            .lock()
+            .map_err(|_| "Instance creation lock is unavailable.".to_string())?;
+        let root = aqua_root(mc_dir.clone())?;
+        let instance_name = validate_instance_name(&instance_name)?;
+        for existing in list_instances(mc_dir.clone())? {
+            if existing.name.eq_ignore_ascii_case(&instance_name)
+                && existing.mc_version == mc_version
+                && existing.loader == loader
+            {
+                return Ok(existing.id);
+            }
+        }
+        let loader_mode = if fabric_loader_version.as_deref().unwrap_or_default().trim().is_empty() {
+            "automatic".to_string()
+        } else {
+            "manual".to_string()
+        };
+        let id = new_instance_id(&root);
+        let inst = instance_dir(&root, &id);
+        if metadata_path(&root, &id).exists() {
+            return Err(format!("Instance already exists: {id}"));
+        }
+        std::fs::create_dir_all(inst.join("mods")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(inst.join("resourcepacks")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(inst.join("shaderpacks")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(inst.join("datapacks")).map_err(|e| e.to_string())?;
 
-    let created_at = now_secs();
-    write_metadata(&root, &InstanceMetadata {
-        id: id.clone(),
-        name: instance_name.clone(),
-        mc_version: mc_version.clone(),
-        loader: loader.clone(),
-        loader_version: None,
-        loader_mode: loader_mode.clone(),
-        installed_version_id: mc_version.clone(),
-        game_dir: None,
-        java_runtime: None,
-        java_path: None,
-        java_version: None,
-        memory_mb: None,
-        java_args: None,
-        install_state: Some("provisioning".to_string()),
-        created_at,
-        updated_at: created_at,
-        last_played_at: None,
-    })?;
-    emit_provisioning(&app, &id, "create_directory", "complete", "Instance directory created");
-    emit_provisioning(&app, &id, "resolve_minecraft", "active", &format!("Resolving Minecraft {mc_version}"));
+        let created_at = now_secs();
+        write_metadata(&root, &InstanceMetadata {
+            id: id.clone(),
+            name: instance_name.clone(),
+            mc_version: mc_version.clone(),
+            loader: loader.clone(),
+            loader_version: None,
+            loader_mode: loader_mode.clone(),
+            installed_version_id: mc_version.clone(),
+            game_dir: None,
+            java_runtime: None,
+            java_path: None,
+            java_version: None,
+            memory_mb: None,
+            java_args: None,
+            install_state: Some("provisioning".to_string()),
+            created_at,
+            updated_at: created_at,
+            last_played_at: None,
+        })?;
+        emit_provisioning(&app, &id, "create_directory", "complete", "Instance directory created");
+        emit_provisioning(&app, &id, "resolve_minecraft", "active", &format!("Resolving Minecraft {mc_version}"));
+        (root, instance_name, loader_mode, id, created_at)
+    };
 
     // Call the install_version command to install the requested Minecraft version/profile
     // and retrieve the final installed profile ID and resolved loader version.

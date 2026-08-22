@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { motion } from 'framer-motion'
 import { Copy, FolderOpen, LoaderCircle, Pencil, Play, Plus, Trash2, X } from 'lucide-react'
 import Button from '../../components/ui/Button'
@@ -10,6 +10,7 @@ import { useToast } from '../../hooks/useToast'
 import { formatInstanceDisplayName, formatInstanceHeading } from '../../utils/instanceDisplay'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { open, save } from '@tauri-apps/plugin-dialog'
+import { useTranslation } from '../../useTranslation'
 
 type LoaderOption = { version: string; stable?: boolean; recommended?: boolean }
 type CreateForm = { name: string; mcVersion: string; loader: 'vanilla' | 'fabric' | 'forge'; loaderVersion: string }
@@ -35,6 +36,7 @@ function statusClass(status: string) {
 }
 
 export default function InstancesPage() {
+  const { t } = useTranslation()
   const toast = useToast()
   const { settings, versions, javaRuntimes, loading: launcherLoading, error: launcherError, refresh: refreshLauncher, selectInstance, detectJava, busy: launcherBusy, activeInstanceId } = useLauncherData()
   const [instances, setInstances] = useState<BackendInstance[]>([])
@@ -51,9 +53,9 @@ export default function InstancesPage() {
   const [editName, setEditName] = useState('')
   const [editMemory, setEditMemory] = useState('')
   const [editJavaArgs, setEditJavaArgs] = useState('')
-  const [editGameDir, setEditGameDir] = useState('')
   const [provisioningSteps, setProvisioningSteps] = useState<ProvisioningStep[]>([])
   const [instanceQuery, setInstanceQuery] = useState('')
+  const creatingRef = useRef(false)
 
   useEffect(() => {
     if (!createOpen) return
@@ -222,12 +224,22 @@ export default function InstancesPage() {
     }
   }, [loadInstances, settings, toast])
 
+  const repairInst = useCallback(async (id: string, name: string) => {
+    try {
+      await tauri.repairInstance(id, settings?.mc_dir)
+      await refreshLauncher()
+      await loadInstances()
+      toast.pushToast(`Repaired ${name} metadata`, 'success')
+    } catch (error) {
+      toast.pushToast(error instanceof Error ? error.message : `Unable to repair ${name}.`, 'error')
+    }
+  }, [loadInstances, refreshLauncher, settings, toast])
+
   const openEdit = useCallback((instance: BackendInstance) => {
     setEditInstance(instance)
     setEditName(instance.name)
     setEditMemory(String(instance.memory_mb ?? settings?.ram_mb ?? 2048))
     setEditJavaArgs(instance.java_args ?? settings?.jvm_args ?? '')
-    setEditGameDir(instance.game_dir ?? '')
   }, [settings])
 
   const saveEdit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
@@ -238,7 +250,6 @@ export default function InstancesPage() {
         name: editName.trim(),
         memory_mb: Math.max(512, Number(editMemory) || 2048),
         java_args: editJavaArgs,
-        game_dir: editGameDir.trim() || null,
       }, settings?.mc_dir)
       await refreshLauncher()
       await loadInstances()
@@ -247,7 +258,7 @@ export default function InstancesPage() {
     } catch (error) {
       toast.pushToast(error instanceof Error ? error.message : 'Unable to save instance settings.', 'error')
     }
-  }, [editGameDir, editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
+  }, [editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
 
   const filteredInstances = useMemo(() => {
     const query = instanceQuery.trim().toLowerCase()
@@ -257,6 +268,7 @@ export default function InstancesPage() {
   
   const createInst = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (creatingRef.current) return
     if (!form.name.trim()) {
       setCreateError('Enter an instance name.')
       return
@@ -269,6 +281,7 @@ export default function InstancesPage() {
       setCreateError('Launcher settings are still loading.')
       return
     }
+    creatingRef.current = true
     setCreateBusy(true)
     setCreateError(null)
     try {
@@ -287,6 +300,7 @@ export default function InstancesPage() {
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : 'Unable to create instance.')
     } finally {
+      creatingRef.current = false
       setCreateBusy(false)
     }
   }, [defaultMcDir, form, loadInstances, refreshLauncher, selectInstance, settings, toast])
@@ -314,21 +328,21 @@ export default function InstancesPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <p className="eyebrow">Instances</p>
-          <h1 className="page-title">Instances</h1>
+          <p className="eyebrow">{t('nav.instances')}</p>
+          <h1 className="page-title">{t('nav.instances')}</h1>
           <p className="page-subtitle">Launch and manage Minecraft installations.</p>
         </div>
         <div className="page-header__actions">
-          <Button variant="ghost" onClick={() => void importPackage()}>Import .aquainst</Button>
-          {activeInstanceId ? <Button variant="ghost" onClick={() => void exportSelected()}>Export</Button> : null}
-          <Button onClick={() => void openCreate()}><Plus size={16} />Create instance</Button>
+          <Button variant="ghost" onClick={() => void importPackage()}>{t('common.import')} .aquainst</Button>
+          {activeInstanceId ? <Button variant="ghost" onClick={() => void exportSelected()}>{t('common.export')}</Button> : null}
+          <Button onClick={() => void openCreate()}><Plus size={16} />{t('common.createInstance')}</Button>
         </div>
       </div>
 
       {error ? (
         <div className="state-banner error" role="alert">
           <span>{error}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadInstances()}>Retry</Button>
+          <Button variant="ghost" size="sm" onClick={() => void loadInstances()}>{t('common.retry')}</Button>
         </div>
       ) : null}
 
@@ -421,6 +435,11 @@ export default function InstancesPage() {
                   <Copy size={14} />
                   Duplicate
                 </Button>
+                {status === 'Failed' || status === 'Not installed' ? (
+                  <Button size="sm" variant="ghost" onClick={() => void repairInst(instance.id, heading)}>
+                    Repair
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   variant="danger"
@@ -442,8 +461,8 @@ export default function InstancesPage() {
           <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="create-instance-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="dialog__header">
               <div>
-                <p className="eyebrow">Instances</p>
-                <h2 id="create-instance-title">Create instance</h2>
+                <p className="eyebrow">{t('nav.instances')}</p>
+                <h2 id="create-instance-title">{t('common.createInstance')}</h2>
               </div>
               <Button variant="ghost" size="icon" aria-label="Close" disabled={createBusy} onClick={() => setCreateOpen(false)}>
                 <X size={16} />
@@ -512,10 +531,10 @@ export default function InstancesPage() {
               ) : null}
 
               <div className="dialog__actions">
-                <Button type="button" variant="ghost" disabled={createBusy} onClick={() => setCreateOpen(false)}>Cancel</Button>
+                <Button type="button" variant="ghost" disabled={createBusy} onClick={() => setCreateOpen(false)}>{t('common.cancel')}</Button>
                 <Button type="submit" variant="aqua" disabled={createBusy || loaderBusy || !form.name.trim() || !form.mcVersion || (!settings?.java_path && !settings?.java_runtime)}>
                   {createBusy ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />}
-                  {createBusy ? 'Creating...' : 'Create instance'}
+                  {createBusy ? t('instances.creating') : t('common.createInstance')}
                 </Button>
               </div>
             </form>
@@ -527,7 +546,7 @@ export default function InstancesPage() {
         <div className="dialog-backdrop" role="presentation" onMouseDown={() => setEditInstance(null)}>
           <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="edit-instance-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="dialog__header">
-              <div><p className="eyebrow">Instance settings</p><h2 id="edit-instance-title">Edit {editInstance.name}</h2></div>
+              <div><p className="eyebrow">{t('common.instanceSettings')}</p><h2 id="edit-instance-title">{t('common.edit')} {editInstance.name}</h2></div>
               <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setEditInstance(null)}><X size={16} /></Button>
             </div>
             <form onSubmit={saveEdit}>
@@ -535,10 +554,10 @@ export default function InstancesPage() {
                 <label className="field field-wide"><span>Name</span><input value={editName} onChange={(event) => setEditName(event.target.value)} /></label>
                 <label className="field"><span>Memory (MB)</span><input type="number" min="512" step="512" value={editMemory} onChange={(event) => setEditMemory(event.target.value)} /></label>
                 <label className="field"><span>Java runtime</span><input value={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} readOnly /></label>
-                <label className="field field-wide"><span>Game directory</span><input value={editGameDir} onChange={(event) => setEditGameDir(event.target.value)} placeholder="Default instance folder" /></label>
+                <label className="field field-wide"><span>Game directory</span><input value={editInstance.game_dir ?? 'Default instance folder'} readOnly /></label>
                 <label className="field field-wide"><span>Java arguments</span><textarea rows={4} value={editJavaArgs} onChange={(event) => setEditJavaArgs(event.target.value)} /></label>
               </div>
-              <div className="dialog__actions"><Button variant="ghost" type="button" onClick={() => setEditInstance(null)}>Cancel</Button><Button variant="aqua" type="submit">Save changes</Button></div>
+              <div className="dialog__actions"><Button variant="ghost" type="button" onClick={() => setEditInstance(null)}>{t('common.cancel')}</Button><Button variant="aqua" type="submit">{t('common.saveChanges')}</Button></div>
             </form>
           </section>
         </div>

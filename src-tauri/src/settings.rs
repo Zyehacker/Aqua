@@ -1,6 +1,6 @@
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -20,6 +20,8 @@ pub struct Settings {
     pub instance_id: Option<String>,
     pub ram_mb: u32,
     pub jvm_args: String,
+    #[serde(default = "default_performance_profile")]
+    pub performance_profile: String,
     pub show_snapshots: bool,
     #[serde(default = "default_minimize_on_launch")]
     pub minimize_on_launch: bool,
@@ -44,6 +46,10 @@ fn default_language() -> String {
     "en".to_string()
 }
 
+fn default_performance_profile() -> String {
+    "balanced".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -59,6 +65,7 @@ impl Default for Settings {
             instance_id: None,
             ram_mb: 2048,
             jvm_args: "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+DisableExplicitGC".into(),
+            performance_profile: default_performance_profile(),
             show_snapshots: false,
             minimize_on_launch: true,
             window_x: None,
@@ -78,8 +85,45 @@ pub struct JvmSuggestion {
     pub cores: usize,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct HardwareInfo {
+    pub cpu: String,
+    pub cores: usize,
+    pub memory_mb: u64,
+    pub gpu: String,
+    pub operating_system: String,
+    pub classification: String,
+    pub explanation: String,
+}
+
+#[tauri::command]
+pub fn detect_hardware() -> HardwareInfo {
+    let cores = available_cores();
+    let memory_mb = read_total_memory_mb();
+    let cpu = std::env::var("PROCESSOR_IDENTIFIER")
+        .or_else(|_| std::env::var("HOSTTYPE"))
+        .unwrap_or_else(|_| "Unknown CPU".to_string());
+    let gpu = std::env::var("GPU")
+        .unwrap_or_else(|_| "GPU details unavailable".to_string());
+    let operating_system = std::env::consts::OS.to_string();
+    let classification = if memory_mb <= 8192 || cores <= 4 {
+        "low".to_string()
+    } else if memory_mb <= 16384 || cores <= 8 {
+        "mid".to_string()
+    } else {
+        "high".to_string()
+    };
+    let explanation = format!(
+        "Classified from {memory_mb} MB physical memory and {cores} logical CPU threads; GPU-specific telemetry is unavailable."
+    );
+    HardwareInfo { cpu, cores, memory_mb, gpu, operating_system, classification, explanation }
+}
+
 fn settings_path(app: &AppHandle) -> PathBuf {
-    let dir = app.path().app_config_dir().expect("could not resolve app config dir");
+    let dir = app
+        .path()
+        .app_config_dir()
+        .expect("could not resolve app config dir");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("settings.json")
 }
@@ -96,7 +140,14 @@ pub fn atomic_write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let temporary = path.with_extension(format!("{}.tmp", path.extension().and_then(|ext| ext.to_str()).unwrap_or("json")));
+    let temporary = path.with_extension(format!(
+        "{}.{}.{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("json"),
+        std::process::id(),
+        app_timestamp()
+    ));
     {
         let mut file = std::fs::File::create(&temporary).map_err(|e| e.to_string())?;
         use std::io::Write;
@@ -106,14 +157,29 @@ pub fn atomic_write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
-        let source: Vec<u16> = temporary.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-        let destination: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let source: Vec<u16> = temporary
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
         unsafe extern "system" {
             fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
         }
         const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
         const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-        if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) } == 0 {
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
             let error = std::io::Error::last_os_error();
             let _ = std::fs::remove_file(&temporary);
             return Err(error.to_string());
@@ -121,7 +187,10 @@ pub fn atomic_write(path: &PathBuf, data: &[u8]) -> Result<(), String> {
         return Ok(());
     }
     #[cfg(not(windows))]
-    std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+    std::fs::rename(&temporary, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        e.to_string()
+    })
 }
 
 pub fn default_mc_dir() -> Option<PathBuf> {
@@ -136,7 +205,10 @@ pub fn default_mc_dir() -> Option<PathBuf> {
 
 pub fn instance_dir(aqua_dir: &std::path::Path, profile_id: &str) -> PathBuf {
     // Prefer KitStorage `aqua_blobs/profiles/<id>` layout, then `profiles/`, then legacy `instances/`.
-    let kit_profiles = aqua_dir.join("aqua_blobs").join("profiles").join(profile_id);
+    let kit_profiles = aqua_dir
+        .join("aqua_blobs")
+        .join("profiles")
+        .join(profile_id);
     let profiles = aqua_dir.join("profiles").join(profile_id);
     let legacy = aqua_dir.join("instances").join(profile_id);
 
@@ -229,7 +301,11 @@ pub fn append_launcher_log(level: &str, source: &str, message: &str) {
         let _ = std::fs::create_dir_all(&dir);
         let fname = format!("session_{}.log", app_timestamp());
         let path = dir.join(fname);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let entry = serde_json::json!({
                 "timestamp": app_timestamp(),
                 "level": level,
@@ -249,7 +325,11 @@ pub fn append_game_log(stream: &str, line: &str) {
         let _ = std::fs::create_dir_all(&dir);
         let fname = format!("session_{}.log", app_timestamp());
         let path = dir.join(fname);
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             let entry = serde_json::json!({
                 "timestamp": app_timestamp(),
                 "stream": stream,
@@ -262,12 +342,22 @@ pub fn append_game_log(stream: &str, line: &str) {
 }
 
 fn rotate_logs(dir: &PathBuf, active: &PathBuf) {
-    let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60)).unwrap_or(SystemTime::UNIX_EPOCH);
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let cutoff = SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(30 * 24 * 60 * 60))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path == *active || path.extension().and_then(|ext| ext.to_str()) != Some("log") { continue; }
-        if std::fs::metadata(&path).and_then(|meta| meta.modified()).map(|modified| modified < cutoff).unwrap_or(false) {
+        if path == *active || path.extension().and_then(|ext| ext.to_str()) != Some("log") {
+            continue;
+        }
+        if std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .map(|modified| modified < cutoff)
+            .unwrap_or(false)
+        {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -278,16 +368,20 @@ pub fn read_logs() -> Result<String, String> {
     let mut paths = Vec::new();
     if let Some(dir) = launcher_logs_dir() {
         if let Ok(entries) = std::fs::read_dir(dir) {
-            paths.extend(entries.flatten().filter_map(|entry| {
-                entry.path().is_file().then_some(entry.path())
-            }));
+            paths.extend(
+                entries
+                    .flatten()
+                    .filter_map(|entry| entry.path().is_file().then_some(entry.path())),
+            );
         }
     }
     if let Some(dir) = game_logs_dir() {
         if let Ok(entries) = std::fs::read_dir(dir) {
-            paths.extend(entries.flatten().filter_map(|entry| {
-                entry.path().is_file().then_some(entry.path())
-            }));
+            paths.extend(
+                entries
+                    .flatten()
+                    .filter_map(|entry| entry.path().is_file().then_some(entry.path())),
+            );
         }
     }
     paths.sort();
@@ -305,7 +399,10 @@ fn read_total_memory_mb() -> u64 {
         if let Ok(contents) = std::fs::read_to_string("/proc/meminfo") {
             for line in contents.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
-                    let kb = rest.split_whitespace().find_map(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                    let kb = rest
+                        .split_whitespace()
+                        .find_map(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
                     if kb > 0 {
                         return kb / 1024;
                     }
@@ -347,7 +444,10 @@ fn read_total_memory_mb() -> u64 {
     }
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("sysctl").args(["-n", "hw.memsize"]).output() {
+        if let Ok(output) = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+        {
             if let Ok(value) = String::from_utf8(output.stdout) {
                 if let Ok(bytes) = value.trim().parse::<u64>() {
                     return bytes / (1024 * 1024);
@@ -359,7 +459,9 @@ fn read_total_memory_mb() -> u64 {
 }
 
 fn available_cores() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
 }
 
 fn gen_args_from_specs() -> JvmSuggestion {
@@ -433,7 +535,9 @@ pub fn list_versions(mc_dir: Option<String>) -> Vec<String> {
     let dir = mc_dir.map(PathBuf::from).or_else(default_mc_dir);
     let Some(dir) = dir else { return vec![] };
     let versions_dir = dir.join("versions");
-    let Ok(entries) = std::fs::read_dir(&versions_dir) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(&versions_dir) else {
+        return vec![];
+    };
 
     let mut versions: Vec<String> = entries
         .flatten()
@@ -459,5 +563,8 @@ pub fn list_versions(mc_dir: Option<String>) -> Vec<String> {
 }
 
 pub fn app_timestamp() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

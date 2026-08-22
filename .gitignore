@@ -13,6 +13,7 @@ node_modules
 dist
 dist-ssr
 *.local
+target
 
 # Editor directories and files
 .vscode/*
@@ -24,3 +25,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+release-assets/
+
+release-assets/

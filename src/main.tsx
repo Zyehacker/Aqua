@@ -4,6 +4,9 @@ import './index.css'
 import App from './App.tsx'
 
 document.documentElement.dataset.theme = window.localStorage.getItem('aqua.theme') ?? 'dark'
+const initialDensity = window.localStorage.getItem('aqua.density')
+document.documentElement.dataset.density = initialDensity ?? 'comfortable'
+document.documentElement.style.setProperty('--space-unit', initialDensity === 'compact' ? '0.82' : '1')
 if (window.localStorage.getItem('aqua.reduceMotion') === 'true') {
   document.documentElement.dataset.reduceMotion = 'true'
 }

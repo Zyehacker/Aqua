@@ -1,16 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod auth;
-mod install;
-mod launch;
-mod mods;
 mod download_manager;
-mod settings;
+mod install;
 mod java;
+mod launch;
 mod mod_browser;
-mod update;
-mod richpresence;
+mod mods;
 mod portable;
+mod richpresence;
+mod settings;
+mod update;
 
 use std::sync::Mutex;
 
@@ -37,7 +37,10 @@ fn main() {
                 // Restore size if available
                 if let (Some(w), Some(h)) = (s.window_width, s.window_height) {
                     if (400..=10000).contains(&w) && (300..=10000).contains(&h) {
-                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w as f64, height: h as f64 }));
+                        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                            width: w as f64,
+                            height: h as f64,
+                        }));
                     }
                 }
                 // Restore position if available
@@ -46,7 +49,11 @@ fn main() {
                     // for minimized/hidden windows. Never restore that as the
                     // main window location.
                     if x > -10000 && y > -10000 {
-                        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x: x as f64, y: y as f64 }));
+                        let _ =
+                            win.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                                x: x as f64,
+                                y: y as f64,
+                            }));
                     }
                 }
                 // Restore maximized state
@@ -95,6 +102,7 @@ fn main() {
             settings::get_default_mc_dir,
             settings::list_versions,
             settings::generate_optimal_args,
+            settings::detect_hardware,
             settings::read_logs,
             java::ensure_java,
             java::list_java_runtimes,
@@ -116,6 +124,8 @@ fn main() {
             richpresence::set_multiplayer_presence,
             mods::list_instances,
             mods::storage_integrity_check,
+            mods::validate_instance,
+            mods::repair_instance,
             mods::get_instance,
             mods::list_mods,
             mods::create_instance,

@@ -1,16 +1,14 @@
-
-
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::settings::atomic_write;
+use base64::engine::general_purpose;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
-use crate::settings::atomic_write;
 use tokio::sync::oneshot;
-use base64::engine::general_purpose;
-use base64::Engine as _;
 
 const MS_CLIENT_ID: &str = "00000000402b5328";
 const MS_AUTH_URL: &str = "https://login.live.com/oauth20_authorize.srf";
@@ -53,7 +51,10 @@ fn delete_account_file(app: &AppHandle) {
 }
 
 fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn format_uuid_with_dashes(no_dashes: &str) -> String {
@@ -62,8 +63,11 @@ fn format_uuid_with_dashes(no_dashes: &str) -> String {
     }
     format!(
         "{}-{}-{}-{}-{}",
-        &no_dashes[0..8], &no_dashes[8..12], &no_dashes[12..16],
-        &no_dashes[16..20], &no_dashes[20..32]
+        &no_dashes[0..8],
+        &no_dashes[8..12],
+        &no_dashes[12..16],
+        &no_dashes[16..20],
+        &no_dashes[20..32]
     )
 }
 
@@ -91,32 +95,49 @@ async fn ms_token_exchange(
     let res: serde_json::Value = client
         .post(MS_TOKEN_URL)
         .form(grant)
-        .send().await.map_err(|e| format!("MS token request failed: {e}"))?
-        .json().await.map_err(|e| format!("MS token response not JSON: {e}"))?;
-    let access_token = res["access_token"].as_str()
+        .send()
+        .await
+        .map_err(|e| format!("MS token request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("MS token response not JSON: {e}"))?;
+    let access_token = res["access_token"]
+        .as_str()
         .ok_or_else(|| format!("MS token: no access_token: {res}"))?
         .to_string();
     let refresh_token = res["refresh_token"].as_str().unwrap_or("").to_string();
     let expires_in = res["expires_in"].as_u64().unwrap_or(86400);
-    Ok(MsTokens { access_token, refresh_token, expires_in })
+    Ok(MsTokens {
+        access_token,
+        refresh_token,
+        expires_in,
+    })
 }
 
 async fn ms_exchange_code(client: &reqwest::Client, code: &str) -> Result<MsTokens, String> {
-    ms_token_exchange(client, &[
-        ("client_id", MS_CLIENT_ID),
-        ("code", code),
-        ("grant_type", "authorization_code"),
-        ("redirect_uri", REDIRECT_URI),
-    ]).await
+    ms_token_exchange(
+        client,
+        &[
+            ("client_id", MS_CLIENT_ID),
+            ("code", code),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", REDIRECT_URI),
+        ],
+    )
+    .await
 }
 
 async fn ms_refresh(client: &reqwest::Client, refresh_token: &str) -> Result<MsTokens, String> {
-    ms_token_exchange(client, &[
-        ("client_id", MS_CLIENT_ID),
-        ("refresh_token", refresh_token),
-        ("grant_type", "refresh_token"),
-        ("redirect_uri", REDIRECT_URI),
-    ]).await
+    ms_token_exchange(
+        client,
+        &[
+            ("client_id", MS_CLIENT_ID),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+            ("redirect_uri", REDIRECT_URI),
+        ],
+    )
+    .await
 }
 
 async fn xbl_auth(client: &reqwest::Client, ms_access: &str) -> Result<(String, String), String> {
@@ -129,15 +150,24 @@ async fn xbl_auth(client: &reqwest::Client, ms_access: &str) -> Result<(String, 
         "RelyingParty": "http://auth.xboxlive.com",
         "TokenType": "JWT",
     });
-    let res: serde_json::Value = client.post(XBL_AUTH_URL)
+    let res: serde_json::Value = client
+        .post(XBL_AUTH_URL)
         .header("Accept", "application/json")
         .json(&body)
-        .send().await.map_err(|e| format!("XBL request failed: {e}"))?
-        .json().await.map_err(|e| format!("XBL response not JSON: {e}"))?;
-    let token = res["Token"].as_str()
-        .ok_or_else(|| format!("XBL: no Token: {res}"))?.to_string();
-    let user_hash = res["DisplayClaims"]["xui"][0]["uhs"].as_str()
-        .ok_or("XBL: no userHash")?.to_string();
+        .send()
+        .await
+        .map_err(|e| format!("XBL request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("XBL response not JSON: {e}"))?;
+    let token = res["Token"]
+        .as_str()
+        .ok_or_else(|| format!("XBL: no Token: {res}"))?
+        .to_string();
+    let user_hash = res["DisplayClaims"]["xui"][0]["uhs"]
+        .as_str()
+        .ok_or("XBL: no userHash")?
+        .to_string();
     Ok((token, user_hash))
 }
 
@@ -147,15 +177,24 @@ async fn xsts_auth(client: &reqwest::Client, xbl_token: &str) -> Result<String, 
         "RelyingParty": "rp://api.minecraftservices.com/",
         "TokenType": "JWT",
     });
-    let res: serde_json::Value = client.post(XSTS_AUTH_URL)
+    let res: serde_json::Value = client
+        .post(XSTS_AUTH_URL)
         .header("Accept", "application/json")
         .json(&body)
-        .send().await.map_err(|e| format!("XSTS request failed: {e}"))?
-        .json().await.map_err(|e| format!("XSTS response not JSON: {e}"))?;
-    if let Some(token) = res["Token"].as_str() { return Ok(token.to_string()); }
+        .send()
+        .await
+        .map_err(|e| format!("XSTS request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("XSTS response not JSON: {e}"))?;
+    if let Some(token) = res["Token"].as_str() {
+        return Ok(token.to_string());
+    }
     if let Some(err) = res["XErr"].as_u64() {
         return Err(match err {
-            2148916233 => "This Microsoft account has no Xbox profile. Create one at xbox.com.".into(),
+            2148916233 => {
+                "This Microsoft account has no Xbox profile. Create one at xbox.com.".into()
+            }
             2148916235 => "Xbox Live is not available in your country/region.".into(),
             2148916238 => "This is a child account. Add it to a Family at xbox.com.".into(),
             _ => format!("XSTS auth failed (XErr {err})"),
@@ -168,24 +207,40 @@ async fn mc_auth(client: &reqwest::Client, xsts: &str, user_hash: &str) -> Resul
     let body = serde_json::json!({
         "identityToken": format!("XBL3.0 x={};{}", user_hash, xsts),
     });
-    let res: serde_json::Value = client.post(MC_AUTH_URL)
+    let res: serde_json::Value = client
+        .post(MC_AUTH_URL)
         .header("Accept", "application/json")
         .json(&body)
-        .send().await.map_err(|e| format!("MC auth request failed: {e}"))?
-        .json().await.map_err(|e| format!("MC auth response not JSON: {e}"))?;
-    res["access_token"].as_str().map(String::from)
+        .send()
+        .await
+        .map_err(|e| format!("MC auth request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("MC auth response not JSON: {e}"))?;
+    res["access_token"]
+        .as_str()
+        .map(String::from)
         .ok_or_else(|| format!("MC auth: no access_token: {res}"))
 }
 
 async fn mc_profile(client: &reqwest::Client, token: &str) -> Result<(String, String), String> {
-    let res: serde_json::Value = client.get(MC_PROFILE_URL)
+    let res: serde_json::Value = client
+        .get(MC_PROFILE_URL)
         .header("Authorization", format!("Bearer {token}"))
-        .send().await.map_err(|e| format!("MC profile request failed: {e}"))?
-        .json().await.map_err(|e| format!("MC profile response not JSON: {e}"))?;
-    let id = res["id"].as_str()
-        .ok_or("Could not fetch profile. Make sure this account owns Minecraft Java Edition.")?.to_string();
-    let name = res["name"].as_str()
-        .ok_or("MC profile: no name")?.to_string();
+        .send()
+        .await
+        .map_err(|e| format!("MC profile request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("MC profile response not JSON: {e}"))?;
+    let id = res["id"]
+        .as_str()
+        .ok_or("Could not fetch profile. Make sure this account owns Minecraft Java Edition.")?
+        .to_string();
+    let name = res["name"]
+        .as_str()
+        .ok_or("MC profile: no name")?
+        .to_string();
     Ok((id, name))
 }
 
@@ -210,7 +265,11 @@ async fn full_auth_from_refresh(client: &reqwest::Client, old: &str) -> Result<M
     let xsts = xsts_auth(client, &xbl).await?;
     let mc = mc_auth(client, &xsts, &uh).await?;
     let (id, name) = mc_profile(client, &mc).await?;
-    let new_refresh = if ms.refresh_token.is_empty() { old.to_string() } else { ms.refresh_token };
+    let new_refresh = if ms.refresh_token.is_empty() {
+        old.to_string()
+    } else {
+        ms.refresh_token
+    };
     Ok(MsaAccount {
         uuid: format_uuid_with_dashes(&id),
         username: name,
@@ -243,15 +302,20 @@ pub async fn msa_login(app: AppHandle) -> Result<MsaAccount, String> {
                 let mut code: Option<String> = None;
                 let mut err: Option<String> = None;
                 for (k, v) in url.query_pairs() {
-                    if k == "code" { code = Some(v.into_owned()); }
-                    else if k == "error" || k == "error_description" { err = Some(v.into_owned()); }
+                    if k == "code" {
+                        code = Some(v.into_owned());
+                    } else if k == "error" || k == "error_description" {
+                        err = Some(v.into_owned());
+                    }
                 }
                 let result = match code {
                     Some(c) => Ok(c),
                     None => Err(err.unwrap_or_else(|| "no auth code returned".into())),
                 };
                 if let Ok(mut g) = tx_nav.lock() {
-                    if let Some(s) = g.take() { let _ = s.send(result); }
+                    if let Some(s) = g.take() {
+                        let _ = s.send(result);
+                    }
                 }
                 return false;
             }
@@ -264,12 +328,15 @@ pub async fn msa_login(app: AppHandle) -> Result<MsaAccount, String> {
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             if let Ok(mut g) = tx_close.lock() {
-                if let Some(s) = g.take() { let _ = s.send(Err("Login cancelled".into())); }
+                if let Some(s) = g.take() {
+                    let _ = s.send(Err("Login cancelled".into()));
+                }
             }
         }
     });
 
-    let code = rx.await
+    let code = rx
+        .await
         .map_err(|_| "Auth window closed without response".to_string())??;
 
     if let Some(w) = app.get_webview_window(AUTH_WINDOW_LABEL) {
@@ -335,7 +402,9 @@ fn cache_dir_for_account(app: &AppHandle) -> PathBuf {
 }
 
 fn read_cached_data_url(path: &PathBuf) -> Option<String> {
-    if !path.exists() { return None; }
+    if !path.exists() {
+        return None;
+    }
     let bytes = std::fs::read(path).ok()?;
     let encoded = general_purpose::STANDARD.encode(bytes);
     Some(format!("data:image/png;base64,{encoded}"))
@@ -354,7 +423,15 @@ fn is_recent(path: &PathBuf, max_age_seconds: u64) -> bool {
 
 #[tauri::command]
 pub async fn get_account_textures(app: AppHandle) -> Result<AccountTextures, String> {
-    let acc = match load_account_file(&app) { Some(a) => a, None => return Ok(AccountTextures { skin_data_url: None, cape_data_url: None }) };
+    let acc = match load_account_file(&app) {
+        Some(a) => a,
+        None => {
+            return Ok(AccountTextures {
+                skin_data_url: None,
+                cape_data_url: None,
+            })
+        }
+    };
     let uuid_nodash = acc.uuid.replace("-", "");
     let cache_dir = cache_dir_for_account(&app);
     let skin_path = cache_dir.join(format!("skin-{}.png", uuid_nodash));
@@ -373,7 +450,10 @@ pub async fn get_account_textures(app: AppHandle) -> Result<AccountTextures, Str
 
     // If both present, return now
     if skin_data.is_some() || cape_data.is_some() {
-        return Ok(AccountTextures { skin_data_url: skin_data, cape_data_url: cape_data });
+        return Ok(AccountTextures {
+            skin_data_url: skin_data,
+            cape_data_url: cape_data,
+        });
     }
 
     // Fetch profile from Mojang session server
@@ -382,27 +462,51 @@ pub async fn get_account_textures(app: AppHandle) -> Result<AccountTextures, Str
         .build()
     {
         Ok(c) => c,
-        Err(_) => return Ok(AccountTextures { skin_data_url: None, cape_data_url: None }),
+        Err(_) => {
+            return Ok(AccountTextures {
+                skin_data_url: None,
+                cape_data_url: None,
+            })
+        }
     };
-    let profile_url = format!("https://sessionserver.mojang.com/session/minecraft/profile/{}", uuid_nodash);
-    let res = client.get(&profile_url).send().await.map_err(|e| format!("Profile request failed: {e}"))?;
+    let profile_url = format!(
+        "https://sessionserver.mojang.com/session/minecraft/profile/{}",
+        uuid_nodash
+    );
+    let res = client
+        .get(&profile_url)
+        .send()
+        .await
+        .map_err(|e| format!("Profile request failed: {e}"))?;
     if !res.status().is_success() {
-        return Ok(AccountTextures { skin_data_url: None, cape_data_url: None });
+        return Ok(AccountTextures {
+            skin_data_url: None,
+            cape_data_url: None,
+        });
     }
-    let v: serde_json::Value = res.json().await.map_err(|e| format!("Profile not JSON: {e}"))?;
+    let v: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Profile not JSON: {e}"))?;
     // find textures property
     let mut textures_b64: Option<String> = None;
     if let Some(props) = v["properties"].as_array() {
         for p in props {
             if p["name"].as_str().unwrap_or("") == "textures" {
-                if let Some(val) = p["value"].as_str() { textures_b64 = Some(val.to_string()); break; }
+                if let Some(val) = p["value"].as_str() {
+                    textures_b64 = Some(val.to_string());
+                    break;
+                }
             }
         }
     }
 
     if let Some(b64) = textures_b64 {
-        let decoded = general_purpose::STANDARD.decode(b64).map_err(|e| format!("textures decode failed: {e}"))?;
-        let tex_json: serde_json::Value = serde_json::from_slice(&decoded).map_err(|e| format!("textures JSON decode: {e}"))?;
+        let decoded = general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("textures decode failed: {e}"))?;
+        let tex_json: serde_json::Value =
+            serde_json::from_slice(&decoded).map_err(|e| format!("textures JSON decode: {e}"))?;
         if let Some(skin_url) = tex_json["textures"]["SKIN"]["url"].as_str() {
             if let Ok(resp) = client.get(skin_url).send().await {
                 if resp.status().is_success() {
@@ -425,5 +529,8 @@ pub async fn get_account_textures(app: AppHandle) -> Result<AccountTextures, Str
         }
     }
 
-    Ok(AccountTextures { skin_data_url: skin_data, cape_data_url: cape_data })
+    Ok(AccountTextures {
+        skin_data_url: skin_data,
+        cape_data_url: cape_data,
+    })
 }

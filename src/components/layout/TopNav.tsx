@@ -109,7 +109,7 @@ export default function TopNav() {
           variant="ghost"
           size="icon"
           className="mobile-nav-toggle"
-          aria-label={mobileNavOpen ? 'Close menu' : 'Open menu'}
+          aria-label={mobileNavOpen ? t('common.close') : t('common.openMenu')}
           onClick={() => appActions.toggleMobileNav()}
         >
           {mobileNavOpen ? <X size={16} /> : <Menu size={16} />}
@@ -121,14 +121,14 @@ export default function TopNav() {
             type="button"
             className="top-nav__account"
             aria-expanded={accountOpen}
-            aria-label="Account menu"
+            aria-label={t('account.menu')}
             onClick={() => appActions.toggleAccount()}
           >
             <span className={`top-nav__avatar ${isSignedIn && skinUrl ? 'has-skin' : ''}`}>
               {isSignedIn && skinLoading ? <LoaderCircle size={12} className="spin" /> : isSignedIn && skinHead ? <img aria-hidden="true" className="top-nav__skin" src={skinHead} alt="" /> : <User size={12} />}
             </span>
             <span className="top-nav__account-label">
-              {isSignedIn ? account!.username : 'Not signed in'}
+              {isSignedIn ? account!.username : t('account.notSignedIn')}
             </span>
           </button>
 
@@ -144,7 +144,7 @@ export default function TopNav() {
                 {isSignedIn ? (
                   <>
                     <div className="account-dropdown__info">
-                      <span className="account-dropdown__label">Signed in</span>
+                      <span className="account-dropdown__label">{t('account.signedIn')}</span>
                       <strong className="account-dropdown__name">{account!.username}</strong>
                     </div>
                     <div className="account-dropdown__actions">
@@ -168,7 +168,7 @@ export default function TopNav() {
                           }
                         }}
                       >
-                        Switch account
+                        {t('account.switch')}
                       </button>
                       <button
                         type="button"
@@ -185,15 +185,15 @@ export default function TopNav() {
                           }
                         }}
                       >
-                        Sign out
+                        {t('account.signOut')}
                       </button>
                     </div>
                   </>
                 ) : (
                   <>
                     <div className="account-dropdown__info">
-                      <span className="account-dropdown__label">Not signed in</span>
-                      <p className="account-dropdown__hint">Sign in with Microsoft to launch Minecraft.</p>
+                      <span className="account-dropdown__label">{t('account.notSignedIn')}</span>
+                      <p className="account-dropdown__hint">{t('account.signInHint')}</p>
                     </div>
                     <div className="account-dropdown__actions">
                       <button
@@ -219,7 +219,7 @@ export default function TopNav() {
                         }}
                       >
                         <LogIn size={13} />
-                        Sign in with Microsoft
+                        {t('account.signIn')}
                       </button>
                     </div>
                   </>

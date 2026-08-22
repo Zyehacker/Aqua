@@ -5,6 +5,7 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import type { DownloadJob } from '../../types'
 import { invoke, listen } from '../../utils/tauri'
+import { useTranslation } from '../../useTranslation'
 
 const STATUS_ICON: Record<string, LucideIcon> = {
   downloading: DownloadCloud,
@@ -13,15 +14,6 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   completed: CheckCircle2,
   failed: XCircle,
   cancelled: XCircle,
-}
-
-function statusLabel(s: string) {
-  if (s === 'downloading') return 'Downloading'
-  if (s === 'installing') return 'Installing'
-  if (s === 'queued') return 'Queued'
-  if (s === 'completed') return 'Completed'
-  if (s === 'cancelled') return 'Cancelled'
-  return 'Failed'
 }
 
 function statusClass(s: string) {
@@ -39,6 +31,7 @@ function formatBytes(bytes: number) {
 }
 
 export default function DownloadsPage() {
+  const { t } = useTranslation()
   const toast = useToast()
   const [jobs, setJobs] = useState<DownloadJob[]>([])
 
@@ -71,7 +64,7 @@ export default function DownloadsPage() {
     try {
       const current = await invoke<DownloadJob[]>('list_downloads')
       if (current) setJobs(current)
-      toast.pushToast('Refreshed', 'success')
+      toast.pushToast(t('downloads.refreshed'), 'success')
     } catch {
       toast.pushToast('Refresh failed', 'error')
     }
@@ -80,7 +73,7 @@ export default function DownloadsPage() {
   const cancel = async (id: number) => {
     try {
       await invoke('cancel_download', { id })
-      toast.pushToast('Download cancelled', 'info')
+      toast.pushToast(t('downloads.cancelled'), 'info')
     } catch (e) {
       toast.pushToast(e instanceof Error ? e.message : 'Cancel failed', 'error')
     }
@@ -92,7 +85,7 @@ export default function DownloadsPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <h1 className="page-title">Downloads</h1>
+          <h1 className="page-title">{t('downloads.title')}</h1>
           {activeCount > 0 ? (
             <p className="page-subtitle">{activeCount} active</p>
           ) : null}
@@ -106,8 +99,8 @@ export default function DownloadsPage() {
       {jobs.length === 0 ? (
         <div className="empty-shell">
           <EmptyState
-            title="Queue is empty"
-            description="Install content from the Content page to see progress here."
+            title={t('downloads.empty')}
+            description={t('downloads.emptyDescription')}
           />
         </div>
       ) : (
@@ -137,7 +130,7 @@ export default function DownloadsPage() {
                   <div className="dl-row__right">
                     <span className={`dl-status ${statusClass(job.status)}`}>
                       <Icon size={12} />
-                      {statusLabel(job.status)}
+                      {t(`downloads.status.${job.status}`)}
                     </span>
                     {isActive ? (
                       <button

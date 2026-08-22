@@ -1,14 +1,15 @@
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::auth::load_account_file;
 use crate::java::{ensure_java_for_major, get_required_java_major_from_metadata};
-use crate::settings::{default_mc_dir, instance_dir, Settings, append_launcher_log};
+use crate::settings::{append_launcher_log, atomic_write, default_mc_dir, instance_dir, Settings};
 
 pub struct LaunchState {
     pub running: Mutex<bool>,
@@ -36,16 +37,26 @@ fn current_arch_str() -> &'static str {
 }
 
 pub fn library_allowed(lib: &serde_json::Value) -> bool {
-    let Some(rules) = lib.get("rules").and_then(|r| r.as_array()) else { return true; };
+    let Some(rules) = lib.get("rules").and_then(|r| r.as_array()) else {
+        return true;
+    };
     let current = current_os_str();
     let mut allowed = false;
     for rule in rules {
         let action_allow = rule.get("action").and_then(|a| a.as_str()) == Some("allow");
-        let matches = match rule.get("os").and_then(|o| o.get("name")).and_then(|n| n.as_str()) {
+        let matches = match rule
+            .get("os")
+            .and_then(|o| o.get("name"))
+            .and_then(|n| n.as_str())
+        {
             Some(name) => name == current,
             None => true,
         };
-        let arch_matches = match rule.get("os").and_then(|o| o.get("arch")).and_then(|a| a.as_str()) {
+        let arch_matches = match rule
+            .get("os")
+            .and_then(|o| o.get("arch"))
+            .and_then(|a| a.as_str())
+        {
             Some(arch) => arch == current_arch_str(),
             None => true,
         };
@@ -83,7 +94,10 @@ fn effective_version_id(settings: &Settings) -> String {
     } else if settings.loader_type == "forge" {
         let base = settings.version.trim();
         let loader = settings.fabric_loader_version.clone().unwrap_or_default();
-        if base.to_lowercase().contains("forge") || loader.trim().is_empty() || settings.instance_id.is_some() {
+        if base.to_lowercase().contains("forge")
+            || loader.trim().is_empty()
+            || settings.instance_id.is_some()
+        {
             base.to_string()
         } else {
             format!("{}-forge-{}", base, loader.trim())
@@ -107,10 +121,13 @@ pub async fn launch_minecraft(
         *running = true;
     }
 
-let _ = app.emit("launch-status", serde_json::json!({
-    "phase": "checking",
-    "message": "Resolving Java..."
-}));
+    let _ = app.emit(
+        "launch-status",
+        serde_json::json!({
+            "phase": "checking",
+            "message": "Resolving Java..."
+        }),
+    );
     append_launcher_log("info", "launch", "Resolving Java...");
 
     let result = build_and_spawn(&app, &settings).await;
@@ -119,7 +136,10 @@ let _ = app.emit("launch-status", serde_json::json!({
             *running = false;
         }
         append_launcher_log("error", "launch", e);
-        let _ = app.emit("launch-status", serde_json::json!({"phase": "error", "message": e}));
+        let _ = app.emit(
+            "launch-status",
+            serde_json::json!({"phase": "error", "message": e}),
+        );
     }
     result
 }
@@ -137,9 +157,13 @@ pub fn stop_minecraft(state: State<'_, LaunchState>) -> Result<(), String> {
     };
 
     let result = if cfg!(windows) {
-        Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output()
+        Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
     } else {
-        Command::new("kill").args(["-TERM", &pid.to_string()]).output()
+        Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()
     };
     result
         .map_err(|e| format!("Unable to stop Minecraft: {e}"))
@@ -166,7 +190,9 @@ fn load_effective_version_json_inner(
     visiting: &mut std::collections::HashSet<String>,
 ) -> Result<(serde_json::Value, PathBuf), String> {
     if !visiting.insert(version_id.to_string()) {
-        return Err(format!("Cyclic Minecraft version inheritance detected at '{version_id}'"));
+        return Err(format!(
+            "Cyclic Minecraft version inheritance detected at '{version_id}'"
+        ));
     }
     let versions_root = mc_dir.join("versions");
     let direct_dir = versions_root.join(version_id);
@@ -177,14 +203,24 @@ fn load_effective_version_json_inner(
         let mut found: Option<(PathBuf, PathBuf)> = None;
         if let Ok(entries) = std::fs::read_dir(&versions_root) {
             'profiles: for entry in entries.flatten() {
-                if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) { continue; }
+                if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                    continue;
+                }
                 let dir = entry.path();
-                let Ok(files) = std::fs::read_dir(&dir) else { continue; };
+                let Ok(files) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
                 for file in files.flatten() {
                     let path = file.path();
-                    if path.extension().and_then(|ext| ext.to_str()) != Some("json") { continue; }
-                    let Ok(raw) = std::fs::read_to_string(&path) else { continue; };
-                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else { continue; };
+                    if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Ok(raw) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                        continue;
+                    };
                     let id_matches = value.get("id").and_then(|id| id.as_str()) == Some(version_id)
                         || dir.file_name().and_then(|name| name.to_str()) == Some(version_id);
                     if id_matches {
@@ -194,14 +230,24 @@ fn load_effective_version_json_inner(
                 }
             }
         }
-        found.ok_or_else(|| format!("Version JSON not found for installed profile '{version_id}' under {}", versions_root.display()))?
+        found.ok_or_else(|| {
+            format!(
+                "Version JSON not found for installed profile '{version_id}' under {}",
+                versions_root.display()
+            )
+        })?
     };
 
     let raw = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
     let mut child: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
 
-    if let Some(parent_id) = child.get("inheritsFrom").and_then(|v| v.as_str()).map(String::from) {
-        let (parent, _parent_dir) = load_effective_version_json_inner(mc_dir, &parent_id, visiting)?;
+    if let Some(parent_id) = child
+        .get("inheritsFrom")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    {
+        let (parent, _parent_dir) =
+            load_effective_version_json_inner(mc_dir, &parent_id, visiting)?;
 
         let mut merged_libs = Vec::new();
         if let Some(arr) = child.get("libraries").and_then(|v| v.as_array()) {
@@ -222,7 +268,12 @@ fn load_effective_version_json_inner(
                 child["assets"] = p.clone();
             }
         }
-        if child.get("mainClass").and_then(|v| v.as_str()).map(str::is_empty).unwrap_or(true) {
+        if child
+            .get("mainClass")
+            .and_then(|v| v.as_str())
+            .map(str::is_empty)
+            .unwrap_or(true)
+        {
             if let Some(p) = parent.get("mainClass") {
                 child["mainClass"] = p.clone();
             }
@@ -259,10 +310,9 @@ fn maven_path_from_coord(coord: &str) -> String {
 }
 
 fn quote_command_arg(arg: &str) -> String {
-    if arg
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | ':' | '.' | '_' | '-' | '=' | '+'))
-    {
+    if arg.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | ':' | '.' | '_' | '-' | '=' | '+')
+    }) {
         arg.to_string()
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
@@ -271,24 +321,32 @@ fn quote_command_arg(arg: &str) -> String {
 
 fn redacted_command_args(args: &[String]) -> Vec<String> {
     let mut redact_next = false;
-    args.iter().map(|arg| {
-        if redact_next {
-            redact_next = false;
-            return "<redacted>".to_string();
-        }
-        if arg == "--accessToken" {
-            redact_next = true;
-        }
-        arg.clone()
-    }).collect()
+    args.iter()
+        .map(|arg| {
+            if redact_next {
+                redact_next = false;
+                return "<redacted>".to_string();
+            }
+            if arg == "--accessToken" {
+                redact_next = true;
+            }
+            arg.clone()
+        })
+        .collect()
 }
 
 fn argument_rules_allow(value: &serde_json::Value) -> bool {
-    let Some(rules) = value.get("rules").and_then(|rules| rules.as_array()) else { return true; };
+    let Some(rules) = value.get("rules").and_then(|rules| rules.as_array()) else {
+        return true;
+    };
     let mut allowed = false;
     for rule in rules {
-        let matches_os = rule.get("os").and_then(|os| os.get("name")).and_then(|name| name.as_str())
-            .map(|name| name == current_os_str()).unwrap_or(true);
+        let matches_os = rule
+            .get("os")
+            .and_then(|os| os.get("name"))
+            .and_then(|name| name.as_str())
+            .map(|name| name == current_os_str())
+            .unwrap_or(true);
         if matches_os {
             allowed = rule.get("action").and_then(|action| action.as_str()) == Some("allow");
         }
@@ -305,15 +363,18 @@ fn expand_metadata_argument(
     }
     let raw = value.get("value").unwrap_or(value);
     let values = raw.as_array().cloned().unwrap_or_else(|| vec![raw.clone()]);
-    values.into_iter().filter_map(|value| {
-        value.as_str().map(|argument| {
-            let mut expanded = argument.to_string();
-            for (key, replacement) in replacements {
-                expanded = expanded.replace(key, replacement);
-            }
-            expanded
+    values
+        .into_iter()
+        .filter_map(|value| {
+            value.as_str().map(|argument| {
+                let mut expanded = argument.to_string();
+                for (key, replacement) in replacements {
+                    expanded = expanded.replace(key, replacement);
+                }
+                expanded
+            })
         })
-    }).collect()
+        .collect()
 }
 
 fn native_extensions() -> &'static [&'static str] {
@@ -343,9 +404,11 @@ fn native_library_path(lib: &serde_json::Value) -> Option<String> {
         let parts: Vec<&str> = name.split(':').collect();
         if parts.len() >= 4 {
             let cls = parts[3];
-            let matches = cls == current_classifier || (cfg!(target_os = "macos") && cls == "natives-osx");
+            let matches =
+                cls == current_classifier || (cfg!(target_os = "macos") && cls == "natives-osx");
             if matches {
-                if let Some(p) = lib.get("downloads")
+                if let Some(p) = lib
+                    .get("downloads")
                     .and_then(|d| d.get("artifact"))
                     .and_then(|a| a.get("path"))
                     .and_then(|p| p.as_str())
@@ -363,8 +426,13 @@ fn native_library_path(lib: &serde_json::Value) -> Option<String> {
     } else {
         "linux"
     };
-    if let Some(cls) = lib.get("natives").and_then(|n| n.get(key)).and_then(|c| c.as_str()) {
-        if let Some(p) = lib.get("downloads")
+    if let Some(cls) = lib
+        .get("natives")
+        .and_then(|n| n.get(key))
+        .and_then(|c| c.as_str())
+    {
+        if let Some(p) = lib
+            .get("downloads")
             .and_then(|d| d.get("classifiers"))
             .and_then(|c| c.get(cls))
             .and_then(|a| a.get("path"))
@@ -376,7 +444,8 @@ fn native_library_path(lib: &serde_json::Value) -> Option<String> {
 
     if let Some(name) = lib.get("name").and_then(|n| n.as_str()) {
         let classifier = name.split(':').nth(3)?;
-        if let Some(p) = lib.get("downloads")
+        if let Some(p) = lib
+            .get("downloads")
             .and_then(|d| d.get("classifiers"))
             .and_then(|c| c.get(classifier))
             .and_then(|a| a.get("path"))
@@ -399,7 +468,8 @@ fn extract_jar_natives(
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)
+        let mut entry = archive
+            .by_index(i)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         if entry.is_dir() {
             continue;
@@ -412,7 +482,10 @@ fn extract_jar_natives(
         if !exts.iter().any(|ext| lower.ends_with(&format!(".{ext}"))) {
             continue;
         }
-        if let Some(fname) = std::path::Path::new(&name).file_name().and_then(|s| s.to_str()) {
+        if let Some(fname) = std::path::Path::new(&name)
+            .file_name()
+            .and_then(|s| s.to_str())
+        {
             let out = dest.join(fname);
             let mut buf = Vec::new();
             use std::io::Read;
@@ -431,7 +504,9 @@ fn extract_natives(
 ) -> std::io::Result<()> {
     let exts = native_extensions();
     for lib in libraries {
-        let Some(rel) = native_library_path(lib) else { continue; };
+        let Some(rel) = native_library_path(lib) else {
+            continue;
+        };
         let jar = libs_root.join(&rel);
         if !jar.exists() {
             return Err(std::io::Error::new(
@@ -444,14 +519,66 @@ fn extract_natives(
     Ok(())
 }
 
+fn update_rpc_from_game_line(line: &str, version: &str) {
+    if line.contains("Starting integrated server") || line.contains("Integrated server") {
+        let _ = crate::richpresence::set_singleplayer_presence(version.to_string());
+    } else if let Some((_, address)) = line.split_once("Connecting to ") {
+        let server = address.split_whitespace().next().unwrap_or(address).trim_matches(',');
+        if !server.is_empty() {
+            let _ = crate::richpresence::set_multiplayer_presence(server.to_string());
+        }
+    }
+}
+
+fn apply_performance_profile(game_dir: &std::path::Path, profile: &str) -> Result<(), String> {
+    let path = game_dir.join("options.txt");
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = raw.lines().map(String::from).collect();
+    let desired = match profile {
+        "maximum" => [
+            ("maxFps", "60"), ("enableVsync", "true"), ("renderDistance", "8"),
+            ("simulationDistance", "5"), ("graphics", "fast"), ("clouds", "false"),
+            ("particles", "decreased"), ("entityShadows", "false"), ("biomeBlendRadius", "0"),
+        ],
+        "balanced" => [
+            ("maxFps", "120"), ("enableVsync", "true"), ("renderDistance", "12"),
+            ("simulationDistance", "8"), ("graphics", "fabulous"), ("clouds", "true"),
+            ("particles", "decreased"), ("entityShadows", "true"), ("biomeBlendRadius", "2"),
+        ],
+        _ => [
+            ("maxFps", "200"), ("enableVsync", "false"), ("renderDistance", "16"),
+            ("simulationDistance", "12"), ("graphics", "fabulous"), ("clouds", "true"),
+            ("particles", "all"), ("entityShadows", "true"), ("biomeBlendRadius", "5"),
+        ],
+    };
+    for (key, value) in desired {
+        if let Some(line) = lines.iter_mut().find(|line| line.starts_with(&format!("{key}:"))) {
+            *line = format!("{key}:{value}");
+        } else {
+            lines.push(format!("{key}:{value}"));
+        }
+    }
+    let data = format!("{}\n", lines.join("\n"));
+    if data != raw {
+        atomic_write(&path, data.as_bytes())?;
+    }
+    Ok(())
+}
+
 async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), String> {
-    let mc_dir = settings.mc_dir.clone()
+    let mc_dir = settings
+        .mc_dir
+        .clone()
         .map(PathBuf::from)
         .or_else(default_mc_dir)
         .ok_or_else(|| "Could not determine .minecraft directory.".to_string())?;
 
     let _ = std::fs::create_dir_all(&mc_dir);
-    append_launcher_log("info", "storage", &format!("Using launcher root: {}", mc_dir.display()));
+    append_launcher_log(
+        "info",
+        "storage",
+        &format!("Using launcher root: {}", mc_dir.display()),
+    );
 
     let meta = if let Some(id) = &settings.instance_id {
         if !id.trim().is_empty() {
@@ -463,23 +590,41 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         None
     };
 
-    let effective_version = meta.as_ref()
+    let effective_version = meta
+        .as_ref()
         .map(|m| m.installed_version_id.clone())
         .unwrap_or_else(|| effective_version_id(settings));
 
     let (v, version_dir) = load_effective_version_json(&mc_dir, &effective_version)?;
-    let minecraft_version = meta.as_ref()
+    let minecraft_version = meta
+        .as_ref()
         .map(|m| m.mc_version.as_str())
         .unwrap_or(settings.version.as_str());
     let required_java_major = get_required_java_major_from_metadata(minecraft_version, &v);
     let java = ensure_java_for_major(
         app.clone(),
-        meta.as_ref().and_then(|m| m.java_path.clone()).or_else(|| settings.java_path.clone()),
+        meta.as_ref()
+            .and_then(|m| m.java_path.clone())
+            .or_else(|| settings.java_path.clone()),
         required_java_major,
-    ).await?;
-    append_launcher_log("info", "java", &format!("Using Java {} for Minecraft {}: {}", required_java_major, minecraft_version, java));
+    )
+    .await?;
+    let java_major = crate::java::check_java_runtime(PathBuf::from(&java).as_path(), Some(minecraft_version))
+        .map(|runtime| runtime.major_version)
+        .unwrap_or(required_java_major);
+    append_launcher_log(
+        "info",
+        "java",
+        &format!(
+            "Using Java {} for Minecraft {}: {}",
+            required_java_major, minecraft_version, java
+        ),
+    );
 
-    let parent_id = v.get("inheritsFrom").and_then(|p| p.as_str()).map(String::from);
+    let parent_id = v
+        .get("inheritsFrom")
+        .and_then(|p| p.as_str())
+        .map(String::from);
     let (jar_owner_dir, jar_owner_id) = match &parent_id {
         Some(pid) => (mc_dir.join("versions").join(pid), pid.clone()),
         None => (version_dir.clone(), effective_version.clone()),
@@ -492,37 +637,67 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         ));
     }
 
-    let main_class = v.get("mainClass").and_then(|m| m.as_str())
-        .unwrap_or("net.minecraft.client.main.Main").to_string();
+    let main_class = v
+        .get("mainClass")
+        .and_then(|m| m.as_str())
+        .unwrap_or("net.minecraft.client.main.Main")
+        .to_string();
 
-    let asset_index = v.get("assetIndex").and_then(|a| a.get("id")).and_then(|i| i.as_str())
+    let asset_index = v
+        .get("assetIndex")
+        .and_then(|a| a.get("id"))
+        .and_then(|i| i.as_str())
         .or_else(|| v.get("assets").and_then(|a| a.as_str()))
-        .unwrap_or("legacy").to_string();
+        .unwrap_or("legacy")
+        .to_string();
 
     let libs_root = mc_dir.join("libraries");
     crate::install::ensure_version_libraries(app, &v, &mc_dir).await?;
     let mut classpath: Vec<PathBuf> = Vec::new();
     let mut missing_libraries: Vec<PathBuf> = Vec::new();
-    let mut seen_library_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_library_paths: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     if let Some(libs) = v.get("libraries").and_then(|l| l.as_array()) {
         for lib in libs {
-            if !library_allowed(lib) { continue; }
-            if native_library_path(lib).is_some() { continue; }
+            if !library_allowed(lib) {
+                continue;
+            }
+            if native_library_path(lib).is_some() {
+                continue;
+            }
 
-            let path = lib.get("downloads")
+            let path = lib
+                .get("downloads")
                 .and_then(|d| d.get("artifact"))
                 .and_then(|a| a.get("path"))
                 .and_then(|p| p.as_str())
                 .map(String::from)
-                .or_else(|| lib.get("name").and_then(|n| n.as_str()).map(maven_path_from_coord));
+                .or_else(|| {
+                    lib.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(maven_path_from_coord)
+                });
             let Some(path) = path else { continue };
 
-            if !seen_library_paths.insert(path.clone()) { continue; }
+            if !seen_library_paths.insert(path.clone()) {
+                continue;
+            }
             let full = libs_root.join(&path);
             if full.exists() {
                 classpath.push(full);
             } else {
                 missing_libraries.push(full);
+            }
+            if path.ends_with("/lwjgl-3.4.1-unsafe.jar") {
+                let core_path = path.replace("-unsafe.jar", ".jar");
+                if seen_library_paths.insert(core_path.clone()) {
+                    let core_full = libs_root.join(core_path);
+                    if core_full.exists() {
+                        classpath.push(core_full);
+                    } else {
+                        missing_libraries.push(core_full);
+                    }
+                }
             }
         }
     }
@@ -544,7 +719,8 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     }
     classpath.push(version_jar_path);
     let cp_sep = if cfg!(windows) { ";" } else { ":" };
-    let cp_str = classpath.iter()
+    let cp_str = classpath
+        .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join(cp_sep);
@@ -555,15 +731,42 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         cmd.arg(&arg);
         launch_args.push(arg);
     };
-    let ram = meta.as_ref().and_then(|m| m.memory_mb).unwrap_or(settings.ram_mb).max(512);
+    let configured_ram = meta
+        .as_ref()
+        .and_then(|m| m.memory_mb)
+        .unwrap_or(settings.ram_mb)
+        .max(512);
+    let reserve_mb = match settings.performance_profile.as_str() {
+        "maximum" => 3072,
+        "quality" => 2048,
+        _ => 4096,
+    };
+    let available_for_game = crate::settings::detect_hardware()
+        .memory_mb
+        .saturating_sub(reserve_mb) as u32;
+    let ram = configured_ram.min(available_for_game.max(512));
     add_arg(&mut cmd, format!("-Xmx{}M", ram));
     add_arg(&mut cmd, "-Xms512M".to_string());
-    
-    let jvm_args = meta.as_ref().and_then(|m| m.java_args.clone()).unwrap_or_else(|| settings.jvm_args.clone());
-    for arg in jvm_args.split_whitespace() {
-        if !arg.trim().is_empty() {
-            add_arg(&mut cmd, arg.trim().to_string());
+
+    let jvm_args = meta
+        .as_ref()
+        .and_then(|m| m.java_args.clone())
+        .unwrap_or_else(|| settings.jvm_args.clone());
+    let mut seen_jvm_args = std::collections::HashSet::new();
+    for arg in jvm_args.split_whitespace().map(str::trim).filter(|arg| !arg.is_empty()) {
+        if arg.starts_with("-Xmx")
+            || arg.starts_with("-Xms")
+            || arg == "--sun-misc-unsafe-memory-access=allow"
+        {
+            append_launcher_log("warn", "java", &format!("Ignoring unsupported JVM argument: {arg}"));
+            continue;
         }
+        if seen_jvm_args.insert(arg.to_string()) {
+            add_arg(&mut cmd, arg.to_string());
+        }
+    }
+    if java_major >= 17 && seen_jvm_args.insert("--enable-native-access=ALL-UNNAMED".to_string()) {
+        add_arg(&mut cmd, "--enable-native-access=ALL-UNNAMED".to_string());
     }
 
     let natives_dir = version_dir.join("natives");
@@ -575,23 +778,40 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     if let Some(args_obj) = v.get("arguments").and_then(|a| a.as_object()) {
         if let Some(jvm_arr) = args_obj.get("jvm").and_then(|g| g.as_array()) {
             let mut jvm_replacements = std::collections::HashMap::new();
-            jvm_replacements.insert("${natives_directory}", natives_dir.to_string_lossy().to_string());
+            jvm_replacements.insert(
+                "${natives_directory}",
+                natives_dir.to_string_lossy().to_string(),
+            );
             jvm_replacements.insert("${launcher_name}", "aqua".to_string());
             jvm_replacements.insert("${launcher_version}", "1.0".to_string());
             jvm_replacements.insert("${classpath}", cp_str.clone());
             for arg_val in jvm_arr {
                 for argument in expand_metadata_argument(arg_val, &jvm_replacements) {
-                    if argument == "-cp" || argument == cp_str { continue; }
+                    if argument == "-cp" || argument == cp_str {
+                        continue;
+                    }
                     add_arg(&mut cmd, argument);
                 }
             }
         }
     }
 
-    add_arg(&mut cmd, format!("-Djava.library.path={}", natives_dir.display()));
+    add_arg(
+        &mut cmd,
+        format!("-Djava.library.path={}", natives_dir.display()),
+    );
     add_arg(&mut cmd, format!("-Djna.tmpdir={}", natives_dir.display()));
-    add_arg(&mut cmd, format!("-Dorg.lwjgl.system.SharedLibraryExtractPath={}", natives_dir.display()));
-    add_arg(&mut cmd, format!("-Dio.netty.native.workdir={}", natives_dir.display()));
+    add_arg(
+        &mut cmd,
+        format!(
+            "-Dorg.lwjgl.system.SharedLibraryExtractPath={}",
+            natives_dir.display()
+        ),
+    );
+    add_arg(
+        &mut cmd,
+        format!("-Dio.netty.native.workdir={}", natives_dir.display()),
+    );
 
     add_arg(&mut cmd, "-cp".to_string());
     add_arg(&mut cmd, cp_str.clone());
@@ -599,29 +819,39 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
 
     let active = load_account_file(app);
     let (username, uuid, access_token, user_type) = match active {
-        Some(acc) => (acc.username, acc.uuid, acc.mc_access_token, "msa".to_string()),
+        Some(acc) => (
+            acc.username,
+            acc.uuid,
+            acc.mc_access_token,
+            "msa".to_string(),
+        ),
         None => {
             let u = if settings.username.trim().is_empty() {
                 "AquaPlayer".to_string()
-            } else { settings.username.clone() };
+            } else {
+                settings.username.clone()
+            };
             let id = offline_uuid(&u);
             (u, id, "0".to_string(), "legacy".to_string())
         }
     };
 
-    let game_profile_id = meta.as_ref()
-        .map(|m| m.id.clone())
-        .unwrap_or_else(|| {
-            settings.instance_id
-                .as_deref()
-                .filter(|id| !id.trim().is_empty())
-                .unwrap_or(&effective_version)
-                .to_string()
-        });
-    let game_dir = meta.as_ref()
+    let game_profile_id = meta.as_ref().map(|m| m.id.clone()).unwrap_or_else(|| {
+        settings
+            .instance_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(&effective_version)
+            .to_string()
+    });
+    let game_dir = meta
+        .as_ref()
         .and_then(|m| m.game_dir.clone())
         .map(PathBuf::from)
         .unwrap_or_else(|| instance_dir(&mc_dir, &game_profile_id));
+    if let Err(error) = apply_performance_profile(&game_dir, &settings.performance_profile) {
+        append_launcher_log("warn", "performance.profile", &format!("Unable to apply {} video profile: {error}", settings.performance_profile));
+    }
     let _ = std::fs::create_dir_all(game_dir.join("mods"));
     let _ = std::fs::create_dir_all(game_dir.join("resourcepacks"));
     let _ = std::fs::create_dir_all(game_dir.join("shaderpacks"));
@@ -630,7 +860,10 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     replacements.insert("${auth_player_name}", username);
     replacements.insert("${version_name}", effective_version.clone());
     replacements.insert("${game_directory}", game_dir.to_string_lossy().to_string());
-    replacements.insert("${assets_root}", mc_dir.join("assets").to_string_lossy().to_string());
+    replacements.insert(
+        "${assets_root}",
+        mc_dir.join("assets").to_string_lossy().to_string(),
+    );
     replacements.insert("${assets_index_name}", asset_index.clone());
     replacements.insert("${auth_uuid}", uuid);
     replacements.insert("${auth_access_token}", access_token);
@@ -662,15 +895,24 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     if game_args.is_empty() {
         // Fallback just in case
         game_args = vec![
-            "--username".into(), replacements["${auth_player_name}"].clone(),
-            "--version".into(), replacements["${version_name}"].clone(),
-            "--gameDir".into(), replacements["${game_directory}"].clone(),
-            "--assetsDir".into(), replacements["${assets_root}"].clone(),
-            "--assetIndex".into(), replacements["${assets_index_name}"].clone(),
-            "--uuid".into(), replacements["${auth_uuid}"].clone(),
-            "--accessToken".into(), replacements["${auth_access_token}"].clone(),
-            "--userType".into(), replacements["${user_type}"].clone(),
-            "--versionType".into(), replacements["${version_type}"].clone(),
+            "--username".into(),
+            replacements["${auth_player_name}"].clone(),
+            "--version".into(),
+            replacements["${version_name}"].clone(),
+            "--gameDir".into(),
+            replacements["${game_directory}"].clone(),
+            "--assetsDir".into(),
+            replacements["${assets_root}"].clone(),
+            "--assetIndex".into(),
+            replacements["${assets_index_name}"].clone(),
+            "--uuid".into(),
+            replacements["${auth_uuid}"].clone(),
+            "--accessToken".into(),
+            replacements["${auth_access_token}"].clone(),
+            "--userType".into(),
+            replacements["${user_type}"].clone(),
+            "--versionType".into(),
+            replacements["${version_type}"].clone(),
         ];
     }
 
@@ -681,6 +923,11 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     cmd.current_dir(&game_dir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
     drop(add_arg);
 
     let command_line = std::iter::once(java.clone())
@@ -713,10 +960,13 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         ),
     );
 
-    let _ = app.emit("launch-status", serde_json::json!({
-        "phase": "starting",
-        "message": "Spawning Java..."
-    }));
+    let _ = app.emit(
+        "launch-status",
+        serde_json::json!({
+            "phase": "starting",
+            "message": "Spawning Java..."
+        }),
+    );
 
     let mut child = cmd.spawn().map_err(|e| {
         format!("Failed to start Java ({java}): {e}\nMake sure Java is installed and available, or set the Java path in Settings.")
@@ -727,44 +977,91 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         }
     }
 
-    let _ = app.emit("launch-status", serde_json::json!({
-        "phase": "running",
-        "message": "Minecraft running"
-    }));
+    let _ = app.emit(
+        "launch-status",
+        serde_json::json!({
+            "phase": "running",
+            "message": "Minecraft running"
+        }),
+    );
+    let _ = crate::richpresence::set_menu_presence(effective_version.clone());
 
     let recent_output = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(24)));
+    let last_log_emit = Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1)));
 
     if let Some(out) = child.stdout.take() {
         let app2 = app.clone();
         let recent = Arc::clone(&recent_output);
+        let last_emit = Arc::clone(&last_log_emit);
+        let rpc_version = effective_version.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines().map_while(Result::ok) {
+                update_rpc_from_game_line(&line, &rpc_version);
                 if let Ok(mut lines) = recent.lock() {
                     if lines.len() >= 24 {
                         lines.pop_front();
                     }
                     lines.push_back(format!("stdout: {line}"));
                 }
-                let _ = app2.emit("launch-log",
-                    serde_json::json!({"stream": "stdout", "line": line}));
-                append_launcher_log("info", "minecraft.stdout", &line);
+                let should_emit = last_emit
+                    .lock()
+                    .map(|mut last| {
+                        if last.elapsed() >= Duration::from_millis(100) {
+                            *last = Instant::now();
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
+                if should_emit {
+                    let _ = app2.emit(
+                        "launch-log",
+                        serde_json::json!({"stream": "stdout", "line": line}),
+                    );
+                }
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("error") || lower.contains("exception") || lower.contains("crash") {
+                    append_launcher_log("info", "minecraft.stdout", &line);
+                }
             }
         });
     }
     if let Some(err) = child.stderr.take() {
         let app2 = app.clone();
         let recent = Arc::clone(&recent_output);
+        let last_emit = Arc::clone(&last_log_emit);
+        let rpc_version = effective_version.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(err).lines().map_while(Result::ok) {
+                update_rpc_from_game_line(&line, &rpc_version);
                 if let Ok(mut lines) = recent.lock() {
                     if lines.len() >= 24 {
                         lines.pop_front();
                     }
                     lines.push_back(format!("stderr: {line}"));
                 }
-                let _ = app2.emit("launch-log",
-                    serde_json::json!({"stream": "stderr", "line": line}));
-                append_launcher_log("error", "minecraft.stderr", &line);
+                let should_emit = last_emit
+                    .lock()
+                    .map(|mut last| {
+                        if last.elapsed() >= Duration::from_millis(100) {
+                            *last = Instant::now();
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(true);
+                if should_emit {
+                    let _ = app2.emit(
+                        "launch-log",
+                        serde_json::json!({"stream": "stderr", "line": line}),
+                    );
+                }
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("error") || lower.contains("exception") || lower.contains("crash") {
+                    append_launcher_log("error", "minecraft.stderr", &line);
+                }
             }
         });
     }
@@ -780,37 +1077,49 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     std::thread::spawn(move || {
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
         if let Some(state) = app3.try_state::<LaunchState>() {
-            if let Ok(mut running) = state.running.lock() { *running = false; }
-            if let Ok(mut child_pid) = state.child_pid.lock() { *child_pid = None; }
+            if let Ok(mut running) = state.running.lock() {
+                *running = false;
+            }
+            if let Ok(mut child_pid) = state.child_pid.lock() {
+                *child_pid = None;
+            }
         }
+        let _ = crate::richpresence::set_idle_presence(app3.clone());
         let recent_lines = recent
             .lock()
             .map(|lines| lines.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
-        let error_hint = if code == 0 {
+        let user_closed = code == 130 || code == -1073741510;
+        let error_hint = if code == 0 || user_closed {
             String::new()
         } else if recent_lines.is_empty() {
             "Minecraft closed without writing an error to stdout or stderr. Open logs for full launch context.".to_string()
         } else {
             recent_lines.join("\n")
         };
-        let message = if code == 0 {
+        let message = if code == 0 || user_closed {
             "Minecraft exited normally.".to_string()
         } else {
             format!("Minecraft exited with code {code}.\n{error_hint}")
         };
-            append_launcher_log(if code == 0 {"info"} else {"error"}, "launch.exit", &message);
-            let _ = app3.emit("launch-status",
-                serde_json::json!({
-                    "phase": "exited",
-                    "code": code,
-                    "message": message,
-                    "error": error_hint,
-                    "java": java_str,
-                    "version": eff_ver,
-                    "loader": loader_type,
-                    "cwd": cwd.to_string_lossy().to_string()
-                }));
+        append_launcher_log(
+            if code == 0 { "info" } else { "error" },
+            "launch.exit",
+            &message,
+        );
+        let _ = app3.emit(
+            "launch-status",
+            serde_json::json!({
+                "phase": "exited",
+                "code": code,
+                "message": message,
+                "error": error_hint,
+                "java": java_str,
+                "version": eff_ver,
+                "loader": loader_type,
+                "cwd": cwd.to_string_lossy().to_string()
+            }),
+        );
     });
 
     Ok(())

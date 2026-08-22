@@ -1,12 +1,12 @@
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
-use futures_util::StreamExt;
-use std::path::PathBuf;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static JOBS_LOCK: OnceLock<Mutex<HashMap<u64, DownloadJob>>> = OnceLock::new();
@@ -26,7 +26,10 @@ fn client() -> &'static reqwest::Client {
 }
 
 fn current_time() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -53,18 +56,50 @@ pub fn list_downloads() -> Result<Vec<DownloadJob>, String> {
 }
 
 fn cleanup_stale_parts() {
-    let active: std::collections::HashSet<PathBuf> = jobs_map().lock().ok()
-        .map(|jobs| jobs.values().filter(|job| matches!(job.status.as_str(), "queued" | "downloading" | "installing")).map(|job| PathBuf::from(&job.dest).with_extension("part")).collect())
+    let active: std::collections::HashSet<PathBuf> = jobs_map()
+        .lock()
+        .ok()
+        .map(|jobs| {
+            jobs.values()
+                .filter(|job| {
+                    matches!(job.status.as_str(), "queued" | "downloading" | "installing")
+                })
+                .map(|job| PathBuf::from(&job.dest).with_extension("part"))
+                .collect()
+        })
         .unwrap_or_default();
-    let Some(root) = crate::settings::default_mc_dir() else { return };
-    let cutoff = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(60 * 60)).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    fn visit(dir: &std::path::Path, active: &std::collections::HashSet<PathBuf>, cutoff: std::time::SystemTime) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Some(root) = crate::settings::default_mc_dir() else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(60 * 60))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    fn visit(
+        dir: &std::path::Path,
+        active: &std::collections::HashSet<PathBuf>,
+        cutoff: std::time::SystemTime,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() { visit(&path, active, cutoff); continue; }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("part") || active.contains(&path) { continue; }
-            if std::fs::metadata(&path).and_then(|meta| meta.modified()).map(|modified| modified < cutoff).unwrap_or(false) { let _ = std::fs::remove_file(path); }
+            if path.is_dir() {
+                visit(&path, active, cutoff);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("part")
+                || active.contains(&path)
+            {
+                continue;
+            }
+            if std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false)
+            {
+                let _ = std::fs::remove_file(path);
+            }
         }
     }
     visit(&root, &active, cutoff);
@@ -98,7 +133,7 @@ pub async fn add_download(app: AppHandle, url: String, dest: String) -> Result<u
         let mut jobs = jobs_map().lock().map_err(|e| e.to_string())?;
         jobs.insert(id, job.clone());
     }
-    
+
     let _ = app.emit("download-status", &job);
 
     let token = CancellationToken::new();
@@ -130,10 +165,16 @@ pub async fn add_download(app: AppHandle, url: String, dest: String) -> Result<u
         }
 
         let temp_path = if dest_path.extension().and_then(|ext| ext.to_str()) == Some("part") {
-            let name = dest_path.file_name().map(|name| name.to_string_lossy().to_string()).unwrap_or_else(|| "download.part".to_string());
+            let name = dest_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "download.part".to_string());
             dest_path.with_file_name(format!(".{}.download", name.trim_start_matches('.')))
         } else {
-            let ext = dest_path.extension().map(|ext| ext.to_string_lossy().to_string()).unwrap_or_else(|| "part".to_string());
+            let ext = dest_path
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_string())
+                .unwrap_or_else(|| "part".to_string());
             dest_path.with_extension(format!("{ext}.part"))
         };
 
@@ -202,7 +243,7 @@ pub async fn add_download(app: AppHandle, url: String, dest: String) -> Result<u
                                     None
                                 };
                                 let pct = total_size.map(|t| (downloaded as f64 / t as f64) * 100.0);
-                                
+
                                 if let Ok(mut jobs) = jobs_map().lock() {
                                     if let Some(j) = jobs.get_mut(&id) {
                                         j.downloaded_bytes = downloaded;
@@ -265,11 +306,11 @@ pub fn cancel_download(app: AppHandle, id: u64) -> Result<(), String> {
         let mut tokens = cancel_tokens().lock().map_err(|e| e.to_string())?;
         tokens.remove(&id)
     };
-    
+
     if let Some(t) = token {
         t.cancel();
     }
-    
+
     // Fallback direct status update just in case
     if let Ok(mut jobs) = jobs_map().lock() {
         if let Some(j) = jobs.get_mut(&id) {

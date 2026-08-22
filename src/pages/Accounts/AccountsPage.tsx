@@ -4,10 +4,12 @@ import Button from '../../components/ui/Button'
 import { useToast } from '../../hooks/useToast'
 import { getAccount, getAccountTextures, microsoftLogin, microsoftLogout, type MsaAccount } from '../../utils/tauri'
 import { renderSkinHead } from '../../utils/skinHead'
+import { useTranslation } from '../../useTranslation'
 
 type AccountInfo = Pick<MsaAccount, 'username' | 'uuid'>
 
 export default function AccountsPage() {
+  const { t } = useTranslation()
   const toast = useToast()
   const [account, setAccount] = useState<AccountInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -43,7 +45,7 @@ export default function AccountsPage() {
     try {
       const result = await microsoftLogin()
       if (result) {
-        toast.pushToast('Microsoft account connected', 'success')
+        toast.pushToast(t('account.connectSuccess'), 'success')
         await loadAccount()
       } else {
         toast.pushToast('Microsoft login requires the desktop app.', 'info')
@@ -60,7 +62,7 @@ export default function AccountsPage() {
     try {
       await microsoftLogout()
       setAccount(null)
-      toast.pushToast('Signed out', 'info')
+      toast.pushToast(t('account.signOut'), 'info')
     } catch (e) {
       toast.pushToast(e instanceof Error ? e.message : 'Sign out failed.', 'error')
     } finally {
@@ -71,13 +73,13 @@ export default function AccountsPage() {
   return (
     <div className="page page-narrow">
       <div className="page-header">
-        <h1 className="page-title">Accounts</h1>
+        <h1 className="page-title">{t('account.title')}</h1>
       </div>
 
       {error ? (
         <div className="state-banner state-banner--error" role="alert">
           <span>{error}</span>
-          <Button variant="ghost" size="sm" onClick={() => void loadAccount()}>Retry</Button>
+          <Button variant="ghost" size="sm" onClick={() => void loadAccount()}>{t('common.retry')}</Button>
         </div>
       ) : null}
 
@@ -87,7 +89,7 @@ export default function AccountsPage() {
             <LoaderCircle size={20} className="spin" />
           </div>
           <div className="account-card__body">
-            <span className="account-card__label">Loading account...</span>
+            <span className="account-card__label">{t('account.loading')}</span>
           </div>
         </div>
       ) : (
@@ -96,14 +98,14 @@ export default function AccountsPage() {
             {skinHead ? <img className="account-card__skin" src={skinHead} alt="" /> : <UserRound size={20} />}
           </div>
           <div className="account-card__body">
-            <span className="account-card__label">Microsoft account</span>
+            <span className="account-card__label">{t('account.microsoft')}</span>
             <strong className="account-card__name">
-              {account?.username ?? 'Not signed in'}
+              {account?.username ?? t('account.notSignedIn')}
             </strong>
             <p className="account-card__hint">
               {account
-                ? 'Authenticated. Ready for online play.'
-                : 'Sign in to launch Minecraft with an authenticated account.'}
+                ? t('account.authenticated')
+                : t('account.signInHint')}
             </p>
           </div>
           {account ? <CheckCircle2 className="account-card__check" size={18} /> : null}
@@ -116,17 +118,17 @@ export default function AccountsPage() {
             <>
               <Button variant="ghost" disabled={busy} onClick={() => void signIn()}>
                 <LogIn size={15} />
-                Switch account
+                {t('account.switch')}
               </Button>
               <Button variant="danger" disabled={busy} onClick={() => void signOut()}>
                 {busy ? <LoaderCircle size={15} className="spin" /> : <LogOut size={15} />}
-                Sign out
+                {t('account.signOut')}
               </Button>
             </>
           ) : (
             <Button variant="aqua" disabled={busy} onClick={() => void signIn()}>
               {busy ? <LoaderCircle size={15} className="spin" /> : <LogIn size={15} />}
-              {busy ? 'Signing in...' : 'Sign in with Microsoft'}
+              {busy ? 'Signing in...' : t('account.signIn')}
             </Button>
           )}
         </div>

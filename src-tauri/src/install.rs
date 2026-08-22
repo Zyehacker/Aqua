@@ -10,15 +10,17 @@ use tokio::time::{sleep, Duration};
 const DOWNLOAD_RETRIES: usize = 3;
 const RETRY_DELAY_MS: u64 = 700;
 
-use crate::launch::library_allowed;
 use crate::java::{ensure_java, ensure_java_for_major, get_required_java_major_from_metadata};
-use crate::settings::{default_mc_dir, append_launcher_log};
+use crate::launch::library_allowed;
+use crate::settings::{append_launcher_log, default_mc_dir};
 
-const VERSION_MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const VERSION_MANIFEST_URL: &str =
+    "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const RESOURCES_BASE: &str = "https://resources.download.minecraft.net";
 const FABRIC_META_BASE: &str = "https://meta.fabricmc.net/v2";
 const FORGE_MAVEN_BASE: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
-const FORGE_PROMOTIONS_URL: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+const FORGE_PROMOTIONS_URL: &str =
+    "https://maven.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
 const DOWNLOAD_CONCURRENCY: usize = 12;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -101,11 +103,16 @@ async fn http_text(client: &reqwest::Client, url: &str) -> Result<String, String
     Err(last_err.unwrap_or_else(|| format!("Failed to fetch {url}")))
 }
 
-async fn download_file(client: &reqwest::Client, url: &str, dest: &Path, expected_sha1: Option<&str>) -> Result<(), String> {
+async fn download_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest: &Path,
+    expected_sha1: Option<&str>,
+) -> Result<(), String> {
     if dest.exists() {
         if let Some(expected) = expected_sha1 {
             if let Ok(bytes) = std::fs::read(dest) {
-                use sha1::{Sha1, Digest};
+                use sha1::{Digest, Sha1};
                 let mut hasher = Sha1::new();
                 hasher.update(&bytes);
                 let hash = format!("{:x}", hasher.finalize());
@@ -130,7 +137,7 @@ async fn download_file(client: &reqwest::Client, url: &str, dest: &Path, expecte
                     last_err = Some(format!("HTTP {} for {url}", resp.status()));
                 } else if let Ok(bytes) = resp.bytes().await {
                     if let Some(expected) = expected_sha1 {
-                        use sha1::{Sha1, Digest};
+                        use sha1::{Digest, Sha1};
                         let mut hasher = Sha1::new();
                         hasher.update(&bytes);
                         let hash = format!("{:x}", hasher.finalize());
@@ -208,20 +215,41 @@ fn library_artifact(lib: &serde_json::Value) -> Option<(String, String)> {
 fn library_artifacts(lib: &serde_json::Value) -> Vec<(String, String, Option<String>)> {
     let mut artifacts = Vec::new();
     if let Some((url, path)) = library_artifact(lib) {
-        let sha1 = lib["downloads"]["artifact"]["sha1"].as_str().map(String::from);
+        let sha1 = lib["downloads"]["artifact"]["sha1"]
+            .as_str()
+            .map(String::from);
         artifacts.push((url, path, sha1));
     }
 
     if let Some(classifiers) = lib["downloads"]["classifiers"].as_object() {
         for artifact in classifiers.values() {
-            let Some(url) = artifact.get("url").and_then(|v| v.as_str()) else { continue };
-            let Some(path) = artifact.get("path").and_then(|v| v.as_str()) else { continue };
+            let Some(url) = artifact.get("url").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(path) = artifact.get("path").and_then(|v| v.as_str()) else {
+                continue;
+            };
             artifacts.push((
                 url.to_string(),
                 path.to_string(),
-                artifact.get("sha1").and_then(|v| v.as_str()).map(String::from),
+                artifact
+                    .get("sha1")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             ));
         }
+    }
+
+    // Some recent Minecraft metadata lists the LWJGL unsafe classifier as
+    // the only core artifact, although Minecraft still loads classes from
+    // the unclassified core jar.
+    if let Some((url, path, _)) = artifacts
+        .iter()
+        .find(|(_, path, _)| path.ends_with("/lwjgl-3.4.1-unsafe.jar"))
+        .cloned()
+    {
+        let core_path = path.replace("-unsafe.jar", ".jar");
+        artifacts.push((url.replace("-unsafe.jar", ".jar"), core_path, None));
     }
 
     artifacts
@@ -237,7 +265,9 @@ fn jar_contains_class(jar_path: &Path, class_path: &str) -> Result<bool, String>
 }
 
 #[tauri::command]
-pub async fn list_remote_versions(include_snapshots: Option<bool>) -> Result<Vec<RemoteVersion>, String> {
+pub async fn list_remote_versions(
+    include_snapshots: Option<bool>,
+) -> Result<Vec<RemoteVersion>, String> {
     let client = reqwest::Client::new();
     let manifest = http_json(&client, VERSION_MANIFEST_URL).await?;
     let snaps = include_snapshots.unwrap_or(false);
@@ -289,8 +319,12 @@ fn extract_xml_versions(xml: &str, mc_version: &str) -> Vec<String> {
     let prefix = format!("{mc_version}-");
     let mut out = Vec::new();
     for part in xml.split("<version>").skip(1) {
-        let Some((raw, _)) = part.split_once("</version>") else { continue; };
-        let Some(version) = raw.strip_prefix(&prefix) else { continue; };
+        let Some((raw, _)) = part.split_once("</version>") else {
+            continue;
+        };
+        let Some(version) = raw.strip_prefix(&prefix) else {
+            continue;
+        };
         if !version.contains("pre") && !version.contains("beta") {
             out.push(version.to_string());
         }
@@ -338,7 +372,10 @@ async fn ensure_java_for_profile(
     profile_id: &str,
     mc_version: &str,
 ) -> Result<String, String> {
-    let profile_path = mc_dir.join("versions").join(profile_id).join(format!("{profile_id}.json"));
+    let profile_path = mc_dir
+        .join("versions")
+        .join(profile_id)
+        .join(format!("{profile_id}.json"));
     let profile = std::fs::read_to_string(&profile_path)
         .ok()
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
@@ -346,10 +383,14 @@ async fn ensure_java_for_profile(
         if value.get("javaVersion").is_some() {
             return value;
         }
-        value.get("inheritsFrom")
+        value
+            .get("inheritsFrom")
             .and_then(|parent| parent.as_str())
             .and_then(|parent_id| {
-                let path = mc_dir.join("versions").join(parent_id).join(format!("{parent_id}.json"));
+                let path = mc_dir
+                    .join("versions")
+                    .join(parent_id)
+                    .join(format!("{parent_id}.json"));
                 std::fs::read_to_string(path).ok()
             })
             .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
@@ -360,7 +401,11 @@ async fn ensure_java_for_profile(
         .map(|value| get_required_java_major_from_metadata(mc_version, value))
         .unwrap_or_else(|| crate::java::get_required_java_major(mc_version));
     let java = ensure_java_for_major(app.clone(), None, required_major).await?;
-    append_launcher_log("info", "java", &format!("Java {required_major} ready for Minecraft {mc_version}: {java}"));
+    append_launcher_log(
+        "info",
+        "java",
+        &format!("Java {required_major} ready for Minecraft {mc_version}: {java}"),
+    );
     Ok(java)
 }
 
@@ -401,33 +446,52 @@ pub async fn install_version(
 
     if loader == "fabric" {
         let loader_version = match fabric_loader_version {
-    Some(v) if !v.trim().is_empty() => {
-        append_launcher_log("info", "install", &format!("Using specified Fabric loader version: {}", v));
-        v
-    },
-    _ => {
-        append_launcher_log("info", "install", "Auto-selecting compatible Fabric loader version...");
-        let loaders = list_fabric_loaders(mc_version.clone()).await?;
-        if loaders.is_empty() {
-            return Err(format!("No Fabric loader versions available for Minecraft {}", mc_version));
-        }
-        let selected = if let Some(stable) = loaders.iter().find(|l| l.stable) {
-            stable.version.clone()
-        } else {
-            loaders.first().unwrap().version.clone()
+            Some(v) if !v.trim().is_empty() => {
+                append_launcher_log(
+                    "info",
+                    "install",
+                    &format!("Using specified Fabric loader version: {}", v),
+                );
+                v
+            }
+            _ => {
+                append_launcher_log(
+                    "info",
+                    "install",
+                    "Auto-selecting compatible Fabric loader version...",
+                );
+                let loaders = list_fabric_loaders(mc_version.clone()).await?;
+                if loaders.is_empty() {
+                    return Err(format!(
+                        "No Fabric loader versions available for Minecraft {}",
+                        mc_version
+                    ));
+                }
+                let selected = if let Some(stable) = loaders.iter().find(|l| l.stable) {
+                    stable.version.clone()
+                } else {
+                    loaders.first().unwrap().version.clone()
+                };
+                append_launcher_log(
+                    "info",
+                    "install",
+                    &format!("Auto-selected Fabric loader version: {}", selected),
+                );
+                selected
+            }
         };
-        append_launcher_log("info", "install", &format!("Auto-selected Fabric loader version: {}", selected));
-        selected
-    }
-};
 
-        let profile_id = install_fabric_profile(&app, &client, &mc_version, &loader_version, &mc_dir).await?;
+        let profile_id =
+            install_fabric_profile(&app, &client, &mc_version, &loader_version, &mc_dir).await?;
         ensure_java_for_profile(&app, &mc_dir, &profile_id, &mc_version).await?;
         emit_status(&app, "done", &format!("Installed {profile_id}"), 1, 1);
         Ok((profile_id, Some(loader_version)))
     } else if loader == "forge" {
-        let forge_loader_version = resolve_forge_loader(&client, &mc_version, fabric_loader_version).await?;
-        let profile_id = install_forge_profile(&app, &client, &mc_version, &forge_loader_version, &mc_dir).await?;
+        let forge_loader_version =
+            resolve_forge_loader(&client, &mc_version, fabric_loader_version).await?;
+        let profile_id =
+            install_forge_profile(&app, &client, &mc_version, &forge_loader_version, &mc_dir)
+                .await?;
         ensure_java_for_profile(&app, &mc_dir, &profile_id, &mc_version).await?;
         emit_status(&app, "done", &format!("Installed {profile_id}"), 1, 1);
         Ok((profile_id, Some(forge_loader_version)))
@@ -449,7 +513,10 @@ async fn install_forge_profile(
     let profile_id = format!("{mc_version}-forge-{forge_loader_version}");
     let installer_name = format!("forge-{full_version}-installer.jar");
     let installer_url = format!("{FORGE_MAVEN_BASE}/{full_version}/{installer_name}");
-    let installer_path = mc_dir.join("caches").join("installers").join(&installer_name);
+    let installer_path = mc_dir
+        .join("caches")
+        .join("installers")
+        .join(&installer_name);
 
     emit_status(app, "forge", "Downloading Forge installer", 0, 2);
     download_file(client, &installer_url, &installer_path, None).await?;
@@ -472,19 +539,35 @@ async fn install_forge_profile(
         ));
     }
 
-    let expected = mc_dir.join("versions").join(&profile_id).join(format!("{profile_id}.json"));
+    let expected = mc_dir
+        .join("versions")
+        .join(&profile_id)
+        .join(format!("{profile_id}.json"));
     if expected.exists() {
-        append_launcher_log("info", "install", &format!("Installed Forge profile: {profile_id}"));
+        append_launcher_log(
+            "info",
+            "install",
+            &format!("Installed Forge profile: {profile_id}"),
+        );
         return Ok(profile_id);
     }
 
-    let alternate = mc_dir.join("versions").join(&full_version).join(format!("{full_version}.json"));
+    let alternate = mc_dir
+        .join("versions")
+        .join(&full_version)
+        .join(format!("{full_version}.json"));
     if alternate.exists() {
-        append_launcher_log("info", "install", &format!("Installed Forge profile: {full_version}"));
+        append_launcher_log(
+            "info",
+            "install",
+            &format!("Installed Forge profile: {full_version}"),
+        );
         return Ok(full_version);
     }
 
-    Err(format!("Forge installer finished but no version profile was found for {profile_id}"))
+    Err(format!(
+        "Forge installer finished but no version profile was found for {profile_id}"
+    ))
 }
 
 async fn install_vanilla(
@@ -493,7 +576,13 @@ async fn install_vanilla(
     mc_version: &str,
     mc_dir: &Path,
 ) -> Result<(), String> {
-    emit_status(app, "starting", &format!("Installing vanilla {mc_version}..."), 0, 0);
+    emit_status(
+        app,
+        "starting",
+        &format!("Installing vanilla {mc_version}..."),
+        0,
+        0,
+    );
 
     let version_dir = mc_dir.join("versions").join(mc_version);
     let json_path = version_dir.join(format!("{mc_version}.json"));
@@ -513,14 +602,23 @@ async fn install_vanilla(
         serde_json::from_str(&raw).map_err(|e| e.to_string())?
     } else {
         let json = http_json(client, version_url).await?;
-        std::fs::write(&json_path, serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            &json_path,
+            serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         json
     };
 
     if let Some(jar_url) = version_json["downloads"]["client"]["url"].as_str() {
         let jar_sha1 = version_json["downloads"]["client"]["sha1"].as_str();
-        emit_status(app, "progress", &format!("Downloading {mc_version}.jar..."), 0, 0);
+        emit_status(
+            app,
+            "progress",
+            &format!("Downloading {mc_version}.jar..."),
+            0,
+            0,
+        );
         download_file(client, jar_url, &jar_path, jar_sha1).await?;
     }
 
@@ -538,9 +636,18 @@ async fn install_vanilla(
         download_many(app, client, to_dl, "library").await?;
     }
 
-    let asset_index_id = version_json["assetIndex"]["id"].as_str().unwrap_or("legacy").to_string();
-    let asset_index_url = version_json["assetIndex"]["url"].as_str().unwrap_or("").to_string();
-    let asset_index_path = mc_dir.join("assets").join("indexes").join(format!("{asset_index_id}.json"));
+    let asset_index_id = version_json["assetIndex"]["id"]
+        .as_str()
+        .unwrap_or("legacy")
+        .to_string();
+    let asset_index_url = version_json["assetIndex"]["url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let asset_index_path = mc_dir
+        .join("assets")
+        .join("indexes")
+        .join(format!("{asset_index_id}.json"));
 
     let asset_index: serde_json::Value = if asset_index_path.exists() {
         let raw = std::fs::read_to_string(&asset_index_path).map_err(|e| e.to_string())?;
@@ -549,8 +656,11 @@ async fn install_vanilla(
         emit_status(app, "progress", "Fetching asset index...", 0, 0);
         let idx = http_json(client, &asset_index_url).await?;
         std::fs::create_dir_all(asset_index_path.parent().unwrap()).map_err(|e| e.to_string())?;
-        std::fs::write(&asset_index_path, serde_json::to_string(&idx).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            &asset_index_path,
+            serde_json::to_string(&idx).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
         idx
     } else {
         return Ok(());
@@ -560,7 +670,9 @@ async fn install_vanilla(
         let assets_root = mc_dir.join("assets").join("objects");
         let mut to_dl: Vec<(String, PathBuf, Option<String>)> = Vec::new();
         for (_name, info) in map {
-            let Some(hash) = info["hash"].as_str() else { continue };
+            let Some(hash) = info["hash"].as_str() else {
+                continue;
+            };
             if hash.len() < 2 {
                 continue;
             }
@@ -611,7 +723,13 @@ async fn install_fabric_profile(
     let libs_root = mc_dir.join("libraries");
 
     if json_path.exists() {
-        emit_status(app, "progress", "Verifying existing Fabric installation...", 0, 0);
+        emit_status(
+            app,
+            "progress",
+            "Verifying existing Fabric installation...",
+            0,
+            0,
+        );
         if let Ok(raw) = std::fs::read_to_string(&json_path) {
             if let Ok(profile) = serde_json::from_str::<serde_json::Value>(&raw) {
                 let all_libs_present = profile["libraries"]
@@ -632,9 +750,18 @@ async fn install_fabric_profile(
                 if all_libs_present {
                     if let Some(loader_jar) = loader_jar_path_from_profile(&profile, &libs_root) {
                         if loader_jar.exists() {
-                            let knot_class = "net/fabricmc/loader/impl/launch/knot/KnotClient.class";
+                            let knot_class =
+                                "net/fabricmc/loader/impl/launch/knot/KnotClient.class";
                             if jar_contains_class(&loader_jar, knot_class)? {
-                                emit_status(app, "progress", &format!("Fabric profile already installed: {inferred_profile_id}"), 1, 1);
+                                emit_status(
+                                    app,
+                                    "progress",
+                                    &format!(
+                                        "Fabric profile already installed: {inferred_profile_id}"
+                                    ),
+                                    1,
+                                    1,
+                                );
                                 return Ok(inferred_profile_id);
                             }
                         }
@@ -651,9 +778,8 @@ async fn install_fabric_profile(
         0,
         0,
     );
-    let url = format!(
-        "{FABRIC_META_BASE}/versions/loader/{mc_version}/{loader_version}/profile/json"
-    );
+    let url =
+        format!("{FABRIC_META_BASE}/versions/loader/{mc_version}/{loader_version}/profile/json");
     let profile = http_json(client, &url).await?;
     let profile_id = profile["id"]
         .as_str()
@@ -681,8 +807,10 @@ async fn install_fabric_profile(
             let Some((url, path)) = library_artifact(lib) else {
                 continue;
             };
-            
-            let sha1 = lib["downloads"]["artifact"]["sha1"].as_str().map(|s| s.to_string());
+
+            let sha1 = lib["downloads"]["artifact"]["sha1"]
+                .as_str()
+                .map(|s| s.to_string());
             let dest = libs_root.join(&path);
             if lib["name"]
                 .as_str()
@@ -723,9 +851,22 @@ async fn install_fabric_profile(
     );
 
     // Also write to persistent launcher logs
-    append_launcher_log("info", "install", &format!("Verified Fabric Loader {loader_version}: {}", loader_jar.display()));
+    append_launcher_log(
+        "info",
+        "install",
+        &format!(
+            "Verified Fabric Loader {loader_version}: {}",
+            loader_jar.display()
+        ),
+    );
 
-    emit_status(app, "progress", &format!("Installed Fabric profile {profile_id}"), 1, 1);
+    emit_status(
+        app,
+        "progress",
+        &format!("Installed Fabric profile {profile_id}"),
+        1,
+        1,
+    );
     Ok(profile_id)
 }
 
@@ -740,7 +881,13 @@ async fn download_many(
         return Ok(());
     }
 
-    emit_status(app, "progress", &format!("Downloading {} {} files...", total, label), 0, total);
+    emit_status(
+        app,
+        "progress",
+        &format!("Downloading {} {} files...", total, label),
+        0,
+        total,
+    );
 
     let sem = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY));
     let done = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -757,7 +904,13 @@ async fn download_many(
             let result = download_file(&client2, &url, &dest, sha1.as_deref()).await;
             let n = done2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if n % 25 == 0 || n == total {
-                emit_status(&app2, "progress", &format!("Downloading {}s ({}/{})...", label2, n, total), n, total);
+                emit_status(
+                    &app2,
+                    "progress",
+                    &format!("Downloading {}s ({}/{})...", label2, n, total),
+                    n,
+                    total,
+                );
             }
             result
         }));

@@ -8,8 +8,10 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import * as tauri from '../../utils/tauri'
 import { cn } from '../../utils/cn'
+import { useTranslation } from '../../useTranslation'
 
 export default function ProfilesPage() {
+  const { t } = useTranslation()
   const toast = useToast()
   const navigate = useNavigate()
   const [instances, setInstances] = useState<tauri.BackendInstance[]>([])
@@ -67,7 +69,7 @@ export default function ProfilesPage() {
     <div className="page">
       <div className="page-header">
         <div>
-          <p className="eyebrow">Profiles</p>
+          <p className="eyebrow">{t('profiles.title')}</p>
           <h1 className="page-title">Switch between curated setups</h1>
           <p className="page-subtitle">Each profile keeps mods, settings, and saves isolated.</p>
         </div>
@@ -91,7 +93,7 @@ export default function ProfilesPage() {
         <div className="grid-2">
           <Card>
             <div className="section-header">
-              <h2>Your profiles</h2>
+              <h2>{t('profiles.yourProfiles')}</h2>
               <span className="small muted">{instances.length} total</span>
             </div>
             <div className="list-stack">
@@ -130,7 +132,7 @@ export default function ProfilesPage() {
           {active && (
             <Card strong>
               <div className="section-header">
-                <h2>Profile details</h2>
+                <h2>{t('profiles.details')}</h2>
                 <span className="chip chip-accent">Active config</span>
               </div>
 

@@ -28,42 +28,43 @@ import type { ContentCategory, ContentItem, ContentPlatform } from '../../types'
 import { cn } from '../../utils/cn'
 import { formatInstanceHeading } from '../../utils/instanceDisplay'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
+import { useTranslation } from '../../useTranslation'
 
 const CATEGORY_META: Record<
   Exclude<ContentCategory, 'overview'>,
   { label: string; description: string; icon: typeof Box; color: string; soft: string }
 > = {
   mods: {
-    label: 'Mods',
-    description: 'Gameplay, performance, and utility mods.',
+    label: 'content.mods',
+    description: 'content.modsDescription',
     icon: Box,
     color: 'var(--primary)',
     soft: 'var(--primary-soft)',
   },
   modpacks: {
-    label: 'Modpacks',
-    description: 'Complete, curated profile setups.',
+    label: 'content.modpacks',
+    description: 'content.modpacksDescription',
     icon: Package,
     color: 'var(--primary)',
     soft: 'var(--primary-soft)',
   },
   'resource-packs': {
-    label: 'Resource Packs',
-    description: 'Textures and visual style packs.',
+    label: 'content.resourcePacks',
+    description: 'content.resourcePacksDescription',
     icon: ImageIcon,
     color: 'var(--primary)',
     soft: 'var(--primary-soft)',
   },
   shaders: {
-    label: 'Shaders',
-    description: 'Lighting and atmosphere presets.',
+    label: 'content.shaders',
+    description: 'content.shadersDescription',
     icon: Sparkles,
     color: 'var(--primary)',
     soft: 'var(--primary-soft)',
   },
   'data-packs': {
-    label: 'Data Packs',
-    description: 'World rules and gameplay tweaks.',
+    label: 'content.dataPacks',
+    description: 'content.dataPacksDescription',
     icon: FileText,
     color: 'var(--primary)',
     soft: 'var(--primary-soft)',
@@ -94,6 +95,7 @@ function ContentSidebar({
   activeInstanceId: string | null
   onInstanceChange: (id: string) => void
 }) {
+  const { t } = useTranslation()
   return (
     <aside className="content-sidebar" aria-label="Content Manager">
       <div className="content-sidebar__brand">
@@ -101,7 +103,7 @@ function ContentSidebar({
           <Layers size={20} />
         </div>
         <div>
-          <h1>Content Manager</h1>
+          <h1>{t('content.manager')}</h1>
           <p>{profileLabel}</p>
         </div>
       </div>
@@ -113,10 +115,10 @@ function ContentSidebar({
           onClick={() => onSelect('overview')}
         >
           <Gauge size={18} />
-          Overview
+          {t('content.overview')}
         </button>
 
-        <div className="content-nav__label">Library</div>
+        <div className="content-nav__label">{t('content.library')}</div>
         {NAV.filter((item) => item.id !== 'overview').map((item) => {
           const Icon = item.icon
           return (
@@ -127,7 +129,7 @@ function ContentSidebar({
               onClick={() => onSelect(item.id)}
             >
               <Icon size={18} />
-              {item.label}
+              {t(`content.${item.id === 'resource-packs' ? 'resourcePacks' : item.id === 'data-packs' ? 'dataPacks' : item.id}`)}
             </button>
           )
         })}
@@ -135,9 +137,9 @@ function ContentSidebar({
 
       <div className="content-sidebar__footer">
         <label className="content-instance-select">
-          <span>Install target</span>
+          <span>{t('content.installTarget')}</span>
           <select value={activeInstanceId ?? ''} onChange={(event) => onInstanceChange(event.target.value)}>
-            {instances.length === 0 ? <option value="">No instance available</option> : null}
+            {instances.length === 0 ? <option value="">{t('content.noInstance')}</option> : null}
             {instances.map((instance) => <option key={instance.id} value={instance.id}>{formatInstanceHeading(instance)}</option>)}
           </select>
         </label>
@@ -156,14 +158,15 @@ function OverviewPanel({
   onClose: () => void
   profileLabel: string
 }) {
+  const { t } = useTranslation()
   return (
     <section className="content-main">
       <div className="content-main__header">
         <div>
           <h2 className="page-title" style={{ fontSize: 28 }}>
-            Overview
+            {t('content.overview')}
           </h2>
-          <p className="page-subtitle">Installed content for {profileLabel}.</p>
+          <p className="page-subtitle">{t('content.installedFor')} {profileLabel}.</p>
         </div>
         <Button variant="ghost" size="icon" aria-label="Close content manager" onClick={onClose}>
           <X size={18} />
@@ -175,9 +178,7 @@ function OverviewPanel({
           <div>
             <p className="eyebrow">Selected instance</p>
             <h2>Content library</h2>
-            <p>
-              Select a category to browse or manage content.
-            </p>
+              <p>{t('content.selectCategory')}</p>
           </div>
         </div>
       </div>
@@ -200,9 +201,10 @@ function OverviewPanel({
                   <Icon size={20} />
                 </div>
               </div>
-              <strong>{meta.label}</strong>
+              <strong>{t(meta.label)}</strong>
+              <small>{t(meta.description)}</small>
               <span>
-                Manage <ChevronRight size={14} style={{ display: 'inline', verticalAlign: 'middle' }} />
+                {t('common.manage')} <ChevronRight size={14} style={{ display: 'inline', verticalAlign: 'middle' }} />
               </span>
             </motion.button>
           )

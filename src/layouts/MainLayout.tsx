@@ -45,13 +45,13 @@ export default function MainLayout() {
       <TopNav />
       <div className="app-shell__body">
         <div className="app-shell__content">
-          <AnimatePresence mode="popLayout" initial={false}>
+          <AnimatePresence mode="wait" initial={false}>
             <motion.div
               key={location.pathname}
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
               style={{ minHeight: '100%' }}
             >
               <Suspense fallback={<PageSkeleton />}>

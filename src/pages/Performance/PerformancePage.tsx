@@ -1,31 +1,12 @@
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Activity, Cpu, Gauge, HardDrive, RefreshCw, Thermometer } from 'lucide-react'
 import Button from '../../components/ui/Button'
 import Card from '../../components/ui/Card'
-import ProgressBar from '../../components/ui/ProgressBar'
 import { useToast } from '../../hooks/useToast'
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value))
-}
 
 export default function PerformancePage() {
   const toast = useToast()
-  const [cpu, setCpu] = useState(42)
-  const [ram, setRam] = useState(61)
-  const [gpu, setGpu] = useState(38)
-  const [disk, setDisk] = useState(24)
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setCpu((value) => clamp(value + (Math.random() * 10 - 5), 18, 92))
-      setRam((value) => clamp(value + (Math.random() * 6 - 3), 35, 88))
-      setGpu((value) => clamp(value + (Math.random() * 12 - 6), 12, 95))
-      setDisk((value) => clamp(value + (Math.random() * 4 - 2), 8, 70))
-    }, 1600)
-    return () => window.clearInterval(id)
-  }, [])
+  const unavailable = '--'
 
   return (
     <div className="page">
@@ -38,11 +19,7 @@ export default function PerformancePage() {
         <Button
           variant="ghost"
           onClick={() => {
-            setCpu(40)
-            setRam(58)
-            setGpu(33)
-            setDisk(22)
-            toast.pushToast('Performance stats refreshed', 'success')
+            toast.pushToast('Live system telemetry is not available yet.', 'info')
           }}
         >
           <RefreshCw size={16} />
@@ -52,9 +29,9 @@ export default function PerformancePage() {
 
       <div className="grid-3" style={{ marginBottom: 16 }}>
         {[
-          { label: 'CPU', value: `${Math.round(cpu)}%`, icon: Cpu },
-          { label: 'Memory', value: `${Math.round(ram)}%`, icon: Activity },
-          { label: 'GPU', value: `${Math.round(gpu)}%`, icon: Gauge },
+          { label: 'CPU', value: unavailable, icon: Cpu },
+          { label: 'Memory', value: unavailable, icon: Activity },
+          { label: 'GPU', value: unavailable, icon: Gauge },
         ].map((metric, index) => {
           const Icon = metric.icon
           return (
@@ -82,10 +59,7 @@ export default function PerformancePage() {
             <span className="small muted">Updated live</span>
           </div>
           <div style={{ display: 'grid', gap: 16 }}>
-            <ProgressBar value={cpu} label="CPU utilization" showValue accent="aqua" />
-            <ProgressBar value={ram} label="Memory usage" showValue />
-            <ProgressBar value={gpu} label="GPU load" showValue accent="aqua" />
-            <ProgressBar value={disk} label="Disk activity" showValue />
+            <p className="small muted">Live telemetry is unavailable in this build. No synthetic measurements are shown.</p>
           </div>
         </Card>
 

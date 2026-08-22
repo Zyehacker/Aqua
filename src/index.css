@@ -52,6 +52,7 @@
   --nav-h:     52px;
   --ease:      cubic-bezier(0.22, 1, 0.36, 1);
   --dur:       180ms;
+  --space-unit: 1;
 
   /* Font stacks */
   --sans:    "Inter", "Inter Local", system-ui, -apple-system, sans-serif;
@@ -154,7 +155,7 @@ p { margin: 0; }
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  background: #070c13;
+  background: #12202a;
   pointer-events: none;
 }
 
@@ -163,27 +164,27 @@ p { margin: 0; }
   height: 100%;
   object-fit: cover;
   object-position: center 42%;
-  opacity: 0.94;
-  filter: saturate(1.1) contrast(1.08);
+  opacity: 0.9;
+  filter: saturate(1.06) contrast(1.02);
   position: absolute;
   inset: 0;
   transition: opacity 500ms var(--ease);
 }
-.app-background__media--active { opacity: .94; }
-.app-background__media--previous { opacity: .94; }
+.app-background__media--active { opacity: .9; }
+.app-background__media--previous { opacity: .9; }
 
 .app-background__overlay {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(180deg, rgba(7, 14, 22, 0.2), rgba(7, 14, 22, 0.42)),
-    linear-gradient(90deg, rgba(9, 14, 23, 0.76), rgba(9, 14, 23, 0.18) 42%, rgba(9, 14, 23, 0.52));
+    linear-gradient(180deg, rgba(10, 22, 29, 0.08), rgba(10, 22, 29, 0.26)),
+    linear-gradient(90deg, rgba(10, 20, 28, 0.48), rgba(10, 20, 28, 0.1) 42%, rgba(10, 20, 28, 0.3));
 }
 
 .app-background__vignette {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at center, transparent 42%, rgba(7, 12, 17, 0.38) 100%);
+  background: radial-gradient(circle at center, transparent 48%, rgba(7, 16, 21, 0.16) 100%);
 }
 
 .app-shell__body {
@@ -851,7 +852,7 @@ a:focus-visible {
 .page {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 16px 0 32px;
+  padding: calc(16px * var(--space-unit)) 0 calc(32px * var(--space-unit));
 }
 
 .page-narrow { max-width: 720px; }
@@ -860,8 +861,8 @@ a:focus-visible {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 20px;
+  gap: calc(16px * var(--space-unit));
+  margin-bottom: calc(20px * var(--space-unit));
 }
 
 .page-title {
@@ -895,13 +896,13 @@ a:focus-visible {
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: calc(12px * var(--space-unit));
 }
 
 .grid-3 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: calc(12px * var(--space-unit));
 }
 
 /* Surface card */
@@ -909,7 +910,7 @@ a:focus-visible {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 16px;
+  padding: calc(16px * var(--space-unit));
 }
 
 .card--strong {
@@ -2530,8 +2531,28 @@ select option {
   place-items: center;
   overflow: hidden;
   color: #eaf5fb;
-  background: #070b11;
+  background:
+    linear-gradient(135deg, rgba(0, 200, 255, 0.08), transparent 42%),
+    radial-gradient(circle at 50% 42%, rgba(88, 223, 209, 0.12), transparent 30%),
+    #070b11;
   transition: opacity 520ms var(--ease);
+}
+.startup-splash::before {
+  content: '';
+  position: absolute;
+  inset: 24px;
+  border: 1px solid rgba(127, 225, 220, 0.12);
+  pointer-events: none;
+}
+.startup-splash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.18;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, transparent, black 30%, black 70%, transparent);
 }
 .startup-splash--exiting { opacity: 0; pointer-events: none; }
 .startup-splash__content { display: grid; justify-items: center; gap: 16px; text-align: center; }
@@ -2606,10 +2627,10 @@ select option {
   --warning: #f2bd6c;
   --danger: #ef8293;
   --info: #79c9ff;
-  --bg: #070d14;
-  --surface: rgba(16, 28, 39, 0.54);
-  --surface2: rgba(21, 38, 50, 0.66);
-  --surface3: rgba(29, 48, 61, 0.48);
+  --bg: #0d1820;
+  --surface: rgba(24, 42, 52, 0.48);
+  --surface2: rgba(31, 52, 63, 0.58);
+  --surface3: rgba(40, 64, 74, 0.46);
   --border: rgba(196, 236, 244, 0.1);
   --border2: rgba(211, 249, 255, 0.19);
   --border-focus: rgba(88, 223, 209, 0.56);

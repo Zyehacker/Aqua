@@ -1,6 +1,6 @@
 [package]
 name = "aqua-client"
-version = "1.1.0"
+version = "1.1.1"
 description = "Aqua Client — A Lightweight Minecraft launcher"
 authors = ["Zye"]
 edition = "2021"

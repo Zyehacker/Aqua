@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
 use tar::Archive;
 use tauri::{AppHandle, Manager};
 use zip::ZipArchive;
-use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct JavaRuntime {
@@ -33,12 +33,12 @@ fn parse_java_version(output: &str) -> (u32, String, String, String) {
         } else if first_line.to_lowercase().contains("java(tm)") {
             vendor = "Oracle".to_string();
         }
-        
+
         if let Some(start) = first_line.find('"') {
             if let Some(end) = first_line[start + 1..].find('"') {
                 let v = &first_line[start + 1..start + 1 + end];
                 version = v.to_string();
-                
+
                 let parts: Vec<&str> = v.split('.').collect();
                 if parts[0] == "1" && parts.len() > 1 {
                     major = parts[1].parse().unwrap_or(0);
@@ -48,7 +48,7 @@ fn parse_java_version(output: &str) -> (u32, String, String, String) {
             }
         }
     }
-    
+
     for line in &lines {
         let l = line.to_lowercase();
         if l.contains("temurin") {
@@ -58,7 +58,7 @@ fn parse_java_version(output: &str) -> (u32, String, String, String) {
         } else if l.contains("zulu") {
             vendor = "Azul Zulu".to_string();
         }
-        
+
         if l.contains("64-bit") {
             arch = "64-bit".to_string();
         } else if l.contains("32-bit") {
@@ -87,7 +87,10 @@ pub fn get_required_java_major(mc_version: &str) -> u32 {
     21
 }
 
-pub fn get_required_java_major_from_metadata(mc_version: &str, metadata: &serde_json::Value) -> u32 {
+pub fn get_required_java_major_from_metadata(
+    mc_version: &str,
+    metadata: &serde_json::Value,
+) -> u32 {
     metadata
         .get("javaVersion")
         .and_then(|java| java.get("majorVersion"))
@@ -100,29 +103,29 @@ pub fn check_java_runtime(path: &Path, mc_version: Option<&str>) -> Option<JavaR
     if !path.exists() {
         return None;
     }
-    
+
     // Using creation of NoWindow is possible, but let's just use it safely. On windows std::process::Command does flash if used in GUI app,
     // but Tauri configures windows subsystem so it usually shouldn't.
     #[cfg(windows)]
     use std::os::windows::process::CommandExt;
-    
+
     let mut cmd = Command::new(path);
     cmd.arg("-version");
-    
+
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    
+
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }
-    
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     let (major, version, vendor, arch) = parse_java_version(&stderr);
     if major == 0 {
         return None;
     }
-    
+
     let mut compatible = true;
     if let Some(mc_v) = mc_version {
         let required = get_required_java_major(mc_v);
@@ -156,14 +159,14 @@ fn find_java_in_dir(dir: &Path, runtimes: &mut std::collections::HashSet<PathBuf
 
 pub fn discover_system_java(mc_version: Option<String>) -> Vec<JavaRuntime> {
     let mut paths = std::collections::HashSet::new();
-    
+
     if let Ok(jh) = std::env::var("JAVA_HOME") {
         let p = PathBuf::from(jh).join("bin").join("java.exe");
         if p.exists() {
             paths.insert(p);
         }
     }
-    
+
     if let Ok(path_env) = std::env::var("PATH") {
         for split in path_env.split(';') {
             let p = PathBuf::from(split).join("java.exe");
@@ -172,7 +175,7 @@ pub fn discover_system_java(mc_version: Option<String>) -> Vec<JavaRuntime> {
             }
         }
     }
-    
+
     let common_dirs = [
         "C:\\Program Files\\Java",
         "C:\\Program Files (x86)\\Java",
@@ -181,22 +184,22 @@ pub fn discover_system_java(mc_version: Option<String>) -> Vec<JavaRuntime> {
         "C:\\Program Files\\Zulu",
         "C:\\Program Files\\BellSoft",
     ];
-    
+
     for dir in common_dirs {
         find_java_in_dir(Path::new(dir), &mut paths);
     }
-    
+
     let mut results = Vec::new();
     let mc_v = mc_version.as_deref();
-    
+
     for p in paths {
         if let Some(jr) = check_java_runtime(&p, mc_v) {
             results.push(jr);
         }
     }
-    
+
     results.sort_by(|a, b| b.major_version.cmp(&a.major_version));
-    
+
     // deduplicate by path
     let mut unique = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -205,7 +208,7 @@ pub fn discover_system_java(mc_version: Option<String>) -> Vec<JavaRuntime> {
             unique.push(r);
         }
     }
-    
+
     unique
 }
 
@@ -215,11 +218,19 @@ pub async fn list_java_runtimes(mc_version: Option<String>) -> Result<Vec<JavaRu
 }
 
 fn java_bin_name() -> &'static str {
-    if cfg!(windows) { "java.exe" } else { "java" }
+    if cfg!(windows) {
+        "java.exe"
+    } else {
+        "java"
+    }
 }
 
 fn app_java_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("java");
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("java");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -243,10 +254,6 @@ fn find_java_in_tree(root: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn is_java_executable(path: &str) -> bool {
-    Command::new(path).arg("-version").output().is_ok()
 }
 
 fn check_java_runtime_major(path: &Path, required_major: u32) -> Option<JavaRuntime> {
@@ -295,7 +302,7 @@ async fn download_bytes_with_progress(app: &AppHandle, url: &str) -> Result<Vec<
 
     let total_size = response.content_length().unwrap_or(0);
     let mut bytes = Vec::new();
-    
+
     while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
         bytes.extend_from_slice(&chunk);
         if total_size > 0 {
@@ -304,11 +311,11 @@ async fn download_bytes_with_progress(app: &AppHandle, url: &str) -> Result<Vec<
                 "java",
                 "Downloading Java Runtime...",
                 bytes.len() as u64,
-                total_size
+                total_size,
             );
         }
     }
-    
+
     Ok(bytes)
 }
 
