@@ -70,7 +70,7 @@ export default function ProfilesPage() {
       <div className="page-header">
         <div>
           <p className="eyebrow">{t('profiles.title')}</p>
-          <h1 className="page-title">Switch between curated setups</h1>
+          <h1 className="page-title">Switch between saved setups</h1>
           <p className="page-subtitle">Each profile keeps mods, settings, and saves isolated.</p>
         </div>
         <Button onClick={() => navigate('/instances')}>

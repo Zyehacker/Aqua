@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::{engine::general_purpose, Engine};
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{append_launcher_log, atomic_write, default_mc_dir, instance_dir};
+use crate::settings::{atomic_write, default_mc_dir, instance_dir};
 use tauri::{AppHandle, Emitter};
 use crate::install::install_version as install_version_cmd;
 
@@ -37,6 +37,8 @@ pub struct StorageIntegrityReport {
 pub struct InstanceInfo {
     pub id: String,
     pub name: String,
+    pub icon: String,
+    pub icon_data: Option<String>,
     pub mc_version: String,
     pub loader: String,
     pub loader_version: Option<String>,
@@ -63,6 +65,8 @@ pub struct InstanceInfo {
 pub(crate) struct InstanceMetadata {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_instance_icon")]
+    pub icon: String,
     pub mc_version: String,
     pub loader: String,
     pub loader_version: Option<String>,
@@ -86,6 +90,7 @@ pub(crate) struct InstanceMetadata {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct InstanceUpdate {
     pub name: Option<String>,
+    pub icon: Option<String>,
     pub mc_version: Option<String>,
     pub loader: Option<String>,
     pub loader_version: Option<String>,
@@ -101,6 +106,19 @@ pub struct InstanceUpdate {
 
 fn default_loader_mode() -> String {
     "manual".to_string()
+}
+
+fn default_instance_icon() -> String { "default".to_string() }
+
+fn default_instance_icon_for_loader(loader: &str, id: &str) -> String {
+    match loader {
+        "fabric" | "forge" => "default".to_string(),
+        _ => match id.bytes().next().unwrap_or_default() % 3 {
+            0 => "grass".to_string(),
+            1 => "adventure".to_string(),
+            _ => "redstone".to_string(),
+        },
+    }
 }
 
 fn emit_provisioning(app: &AppHandle, instance_id: &str, stage: &str, state: &str, message: &str) {
@@ -281,6 +299,7 @@ pub async fn repair_instance(
     let metadata = InstanceMetadata {
         id: instance_id.clone(),
         name: text("name", format!("Minecraft {instance_id}")),
+        icon: text("icon", default_instance_icon()),
         mc_version: text("mc_version", text("version", "unknown".into())),
         loader,
         loader_version: value.get("loader_version").and_then(|v| v.as_str()).map(String::from),
@@ -342,12 +361,23 @@ pub(crate) fn write_metadata(root: &Path, meta: &InstanceMetadata) -> Result<(),
 }
 
 fn instance_info(root: &Path, meta: InstanceMetadata) -> InstanceInfo {
+    let icon_data = instance_dir(root, &meta.id)
+        .join("instance-icon.png")
+        .is_file()
+        .then(|| {
+            std::fs::read(instance_dir(root, &meta.id).join("instance-icon.png"))
+                .ok()
+                .map(|bytes| format!("data:image/png;base64,{}", general_purpose::STANDARD.encode(bytes)))
+        })
+        .flatten();
     let mods_dir = category_dir(root, &meta.id, "mods");
     let packs_dir = category_dir(root, &meta.id, "texturepacks");
     let shaders_dir = category_dir(root, &meta.id, "shaders");
     InstanceInfo {
         id: meta.id,
         name: meta.name,
+        icon: meta.icon,
+        icon_data,
         mc_version: meta.mc_version,
         loader: meta.loader,
         loader_version: meta.loader_version,
@@ -454,8 +484,7 @@ fn open_path(p: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, String> {
+fn list_instances_blocking(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, String> {
     let root = aqua_root(mc_dir)?;
     let mut out = Vec::new();
     // Support the current KitStorage layout as well as older launcher roots.
@@ -475,7 +504,23 @@ pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, Strin
                 if out.iter().any(|item: &InstanceInfo| item.id == id) {
                     continue;
                 }
-                if let Some(meta) = read_metadata(&root, &id) {
+                if let Some(mut meta) = read_metadata(&root, &id) {
+                    // Instances created by an older launcher version may have no
+                    // `install_state` field (deserialised as None). Derive it from
+                    // disk instead of letting the UI report a present instance as
+                    // "Not installed": if the version JSON exists, it is actually
+                    // installed/ready; otherwise it needs repair.
+                    if meta.install_state.is_none() {
+                        let version_json = root
+                            .join("versions")
+                            .join(&meta.installed_version_id)
+                            .join(format!("{}.json", meta.installed_version_id));
+                        meta.install_state = Some(if version_json.is_file() {
+                            "ready".to_string()
+                        } else {
+                            "needs_repair".to_string()
+                        });
+                    }
                     out.push(instance_info(&root, meta));
                 }
             }
@@ -484,6 +529,13 @@ pub fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, Strin
 
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| a.name.cmp(&b.name)));
     Ok(out)
+}
+
+#[tauri::command]
+pub async fn list_instances(mc_dir: Option<String>) -> Result<Vec<InstanceInfo>, String> {
+    tokio::task::spawn_blocking(move || list_instances_blocking(mc_dir))
+        .await
+        .map_err(|error| format!("Instance scan worker failed: {error}"))?
 }
 
 fn count_files(dir: &Path) -> u64 {
@@ -699,6 +751,11 @@ pub fn save_instance_icon(
     }
     let dest = instance.join("instance-icon.png");
     std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    let mut metadata = read_metadata(&root, &instance_id)
+        .ok_or_else(|| format!("Instance metadata not found: {instance_id}"))?;
+    metadata.icon = "custom".to_string();
+    metadata.updated_at = now_secs();
+    write_metadata(&root, &metadata)?;
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -728,13 +785,21 @@ pub async fn create_instance(
     fabric_loader_version: Option<String>,
     mc_dir: Option<String>,
 ) -> Result<String, String> {
+    let loader = loader.trim().to_lowercase();
+    if !matches!(loader.as_str(), "vanilla" | "fabric" | "forge") {
+        return Err(format!("Unsupported instance loader: {loader}"));
+    }
+    let mc_version = mc_version.trim().to_string();
+    if mc_version.is_empty() {
+        return Err("Minecraft version is required.".to_string());
+    }
     let (root, instance_name, loader_mode, id, created_at) = {
         let _creation_guard = creation_lock()
             .lock()
             .map_err(|_| "Instance creation lock is unavailable.".to_string())?;
         let root = aqua_root(mc_dir.clone())?;
         let instance_name = validate_instance_name(&instance_name)?;
-        for existing in list_instances(mc_dir.clone())? {
+        for existing in list_instances_blocking(mc_dir.clone())? {
             if existing.name.eq_ignore_ascii_case(&instance_name)
                 && existing.mc_version == mc_version
                 && existing.loader == loader
@@ -761,6 +826,7 @@ pub async fn create_instance(
         write_metadata(&root, &InstanceMetadata {
             id: id.clone(),
             name: instance_name.clone(),
+            icon: default_instance_icon_for_loader(&loader, &id),
             mc_version: mc_version.clone(),
             loader: loader.clone(),
             loader_version: None,
@@ -843,6 +909,7 @@ pub async fn create_instance(
     let mut metadata = InstanceMetadata {
         id: id.clone(),
         name: instance_name,
+        icon: default_instance_icon_for_loader(&loader, &id),
         mc_version: mc_version.clone(),
         loader: loader.clone(),
         loader_version: resolved_loader_version.clone(),
@@ -869,7 +936,11 @@ pub async fn create_instance(
                 &id,
                 &root,
             ).await {
-                append_launcher_log("warn", "fabric.baseline", &format!("Baseline content completed with unavailable components: {error}"));
+                metadata.install_state = Some("failed".to_string());
+                metadata.updated_at = now_secs();
+                write_metadata(&root, &metadata)?;
+                emit_provisioning(&app, &id, "resolve_default_mods", "failed", &error);
+                return Err(error);
             }
         }
     }
@@ -889,6 +960,15 @@ pub async fn create_instance(
     write_metadata(&root, &metadata)?;
     emit_provisioning(&app, &id, "verify", "complete", "Instance verified");
     emit_provisioning(&app, &id, "finalize", "complete", "Instance is ready");
+    let persisted = read_metadata(&root, &id)
+        .ok_or_else(|| "Instance was provisioned but its metadata could not be read back.".to_string())?;
+    if persisted.id != id
+        || persisted.mc_version != mc_version
+        || persisted.loader != loader
+        || persisted.install_state.as_deref() != Some("ready")
+    {
+        return Err("Instance was provisioned but its metadata is incomplete or not ready.".to_string());
+    }
     Ok(id)
 }
 
@@ -907,6 +987,11 @@ pub fn update_instance(
             return Err("Instance name cannot be empty.".to_string());
         }
         meta.name = trimmed.to_string();
+    }
+    if let Some(icon) = update.icon {
+        if ["grass", "forge", "fabric", "adventure", "redstone", "chest"].contains(&icon.as_str()) {
+            meta.icon = icon;
+        }
     }
     if let Some(version) = update.mc_version {
         if version.trim().is_empty() {
@@ -1005,6 +1090,7 @@ pub fn duplicate_instance(
     write_metadata(&root, &InstanceMetadata {
         id: new_id.clone(),
         name: new_name,
+        icon: source_meta.icon,
         mc_version: source_meta.mc_version,
         loader: source_meta.loader,
         loader_version: source_meta.loader_version,

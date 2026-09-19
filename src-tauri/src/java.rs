@@ -214,7 +214,9 @@ pub fn discover_system_java(mc_version: Option<String>) -> Vec<JavaRuntime> {
 
 #[tauri::command]
 pub async fn list_java_runtimes(mc_version: Option<String>) -> Result<Vec<JavaRuntime>, String> {
-    Ok(discover_system_java(mc_version))
+    tokio::task::spawn_blocking(move || discover_system_java(mc_version))
+        .await
+        .map_err(|error| format!("Java discovery worker failed: {error}"))
 }
 
 fn java_bin_name() -> &'static str {

@@ -53,7 +53,7 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
     Ok((size, format!("{:x}", hasher.finalize())))
 }
 
-fn collect_files(
+fn collect_portable_tree(
     dir: &Path,
     base: &Path,
     out: &mut Vec<(PathBuf, PackageFile)>,
@@ -62,17 +62,15 @@ fn collect_files(
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files(&path, base, out)?;
+            collect_portable_tree(&path, base, out)?;
         } else if path.is_file() {
+            let relative = path.strip_prefix(base).map_err(|e| e.to_string())?;
             let (size, sha1) = hash_file(&path)?;
-            let relative = path
-                .strip_prefix(base)
-                .map_err(|e| e.to_string())?
-                .to_path_buf();
+            let relative_path = relative.to_string_lossy().replace('\\', "/");
             out.push((
                 path,
                 PackageFile {
-                    path: relative.to_string_lossy().replace('\\', "/"),
+                    path: relative_path,
                     size,
                     sha1,
                 },
@@ -93,7 +91,7 @@ fn add_file(writer: &mut ZipWriter<File>, source: &Path, archive_path: &str) -> 
 }
 
 #[tauri::command]
-pub fn export_instance(
+pub async fn export_instance(
     instance_id: String,
     destination: String,
     mc_dir: Option<String>,
@@ -103,52 +101,65 @@ pub fn export_instance(
         .ok_or_else(|| format!("Instance not found: {instance_id}"))?;
     let instance_root = instance_dir(&root, &instance_id);
     let package = PathBuf::from(destination);
-    if let Some(parent) = package.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
 
-    let mut files = Vec::new();
-    if instance_root.exists() {
-        let before = files.len();
-        collect_files(&instance_root, &instance_root, &mut files)?;
-        for (_, entry) in files.iter_mut().skip(before) {
-            entry.path = format!("instance/{}", entry.path);
+    let result = tokio::task::spawn_blocking(move || {
+        if let Some(parent) = package.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-    }
-    let java_required_major = Some(crate::java::get_required_java_major(&metadata.mc_version));
-    let manifest = PackageManifest {
-        format: "aqua-instance".into(),
-        format_version: FORMAT_VERSION,
-        created_at: crate::settings::app_timestamp(),
-        instance: metadata,
-        files: files.iter().map(|(_, file)| file.clone()).collect(),
-        java_required_major,
-    };
-    let file = File::create(&package).map_err(|e| e.to_string())?;
-    let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    writer
-        .start_file("manifest.json", options)
-        .map_err(|e| e.to_string())?;
-    writer
-        .write_all(
-            serde_json::to_string_pretty(&manifest)
-                .map_err(|e| e.to_string())?
-                .as_bytes(),
-        )
-        .map_err(|e| e.to_string())?;
-    for (source, entry) in files {
-        if entry.path.eq_ignore_ascii_case("account.json")
-            || entry.path.to_ascii_lowercase().contains("credentials")
-            || entry.path.to_ascii_lowercase().contains("token")
-        {
-            return Err("Refusing to export authentication or credential data".to_string());
+
+        let mut files = Vec::new();
+        if instance_root.exists() {
+            for root_name in ["config", "resourcepacks", "shaderpacks"] {
+                let portable_root = instance_root.join(root_name);
+                if portable_root.exists() { collect_portable_tree(&portable_root, &instance_root, &mut files)?; }
+            }
+            let options = instance_root.join("options.txt");
+            if options.is_file() {
+                let (size, sha1) = hash_file(&options)?;
+                files.push((options, PackageFile { path: "options.txt".into(), size, sha1 }));
+            }
+            for (_, entry) in files.iter_mut() { entry.path = format!("instance/{}", entry.path); }
         }
-        let archive_path = format!("files/{}", entry.path);
-        add_file(&mut writer, &source, &archive_path)?;
-    }
-    writer.finish().map_err(|e| e.to_string())?;
-    Ok(package.to_string_lossy().to_string())
+
+        let java_required_major = Some(crate::java::get_required_java_major(&metadata.mc_version));
+        let manifest = PackageManifest {
+            format: "aqua-instance".into(),
+            format_version: FORMAT_VERSION,
+            created_at: crate::settings::app_timestamp(),
+            instance: metadata,
+            files: files.iter().map(|(_, file)| file.clone()).collect(),
+            java_required_major,
+        };
+        let file = File::create(&package).map_err(|e| e.to_string())?;
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        writer
+            .start_file("manifest.json", options)
+            .map_err(|e| e.to_string())?;
+        writer
+            .write_all(
+                serde_json::to_string_pretty(&manifest)
+                    .map_err(|e| e.to_string())?
+                    .as_bytes(),
+            )
+            .map_err(|e| e.to_string())?;
+        for (source, entry) in files {
+            if entry.path.eq_ignore_ascii_case("account.json")
+                || entry.path.to_ascii_lowercase().contains("credentials")
+                || entry.path.to_ascii_lowercase().contains("token")
+            {
+                return Err("Refusing to export authentication or credential data".to_string());
+            }
+            let archive_path = format!("files/{}", entry.path);
+            add_file(&mut writer, &source, &archive_path)?;
+        }
+        writer.finish().map_err(|e| e.to_string())?;
+        Ok(package.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| format!("Export task was interrupted: {e}"))??;
+
+    Ok(result)
 }
 
 fn safe_relative(path: &str) -> Result<PathBuf, String> {

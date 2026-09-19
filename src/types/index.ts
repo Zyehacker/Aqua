@@ -24,6 +24,11 @@ export type ContentItem = {
   accent: string
   pageUrl?: string
   iconUrl?: string
+  compatibility?: string
+  compatibilityReason?: string
+  loaders?: string[]
+  gameVersions?: string[]
+  source?: 'modrinth' | 'local'
 }
 
 export type Instance = {

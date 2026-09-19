@@ -1,38 +1,26 @@
-type UiSoundTone = 'primary' | 'success' | 'error' | 'nav'
+export type UiSoundTone = 'click1' | 'click2' | 'popup' | 'close' | 'notification' | 'error'
 
-const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
-
-let audioContext: AudioContext | null = null
-
-function getContext() {
-  if (!AudioContextClass) return null
-  if (!audioContext) {
-    audioContext = new AudioContextClass()
-  }
-  return audioContext
+const SOUND_FILES: Record<UiSoundTone, string> = {
+  click1: 'UI Click1.mp3', click2: 'UI Click2.mp3', popup: 'Popup.mp3', close: 'UI Close.mp3', notification: 'Notification.mp3', error: 'Notification.mp3',
 }
 
-export function playUiSound(tone: UiSoundTone = 'primary', volume = 0.28) {
-  const context = getContext()
-  if (!context) return
+function soundUrl(file: string) {
+  return `/sounds/${encodeURIComponent(file)}`
+}
 
-  const now = context.currentTime
-  const oscillator = context.createOscillator()
-  const gain = context.createGain()
+const lastPlayedAt = new Map<UiSoundTone, number>()
+const DUPLICATE_WINDOW_MS = 180
 
-  oscillator.type = tone === 'error' ? 'square' : tone === 'success' ? 'triangle' : 'sine'
-  oscillator.frequency.setValueAtTime(
-    tone === 'error' ? 180 : tone === 'success' ? 620 : tone === 'nav' ? 420 : 510,
-    now,
-  )
-
-  const end = tone === 'error' ? 0.12 : tone === 'success' ? 0.18 : 0.1
-  gain.gain.setValueAtTime(0.0001, now)
-  gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, volume), now + 0.01)
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + end)
-
-  oscillator.connect(gain)
-  gain.connect(context.destination)
-  oscillator.start(now)
-  oscillator.stop(now + end)
+export function playUiSound(tone: UiSoundTone = 'click1', volume?: number) {
+  if (window.localStorage.getItem('aqua.uiSounds') === 'false') return
+  const now = performance.now()
+  if (now - (lastPlayedAt.get(tone) ?? -Infinity) < DUPLICATE_WINDOW_MS) return
+  lastPlayedAt.set(tone, now)
+  const url = soundUrl(SOUND_FILES[tone])
+  const audio = new Audio(url)
+  const configuredVolume = volume ?? Number(window.localStorage.getItem('aqua.uiSoundVolume') ?? '0.28')
+  const safeVolume = Number.isFinite(configuredVolume) ? configuredVolume : 0.28
+  audio.volume = Math.max(0, Math.min(1, safeVolume * 0.28))
+  audio.preload = 'auto'
+  void audio.play().catch(() => undefined)
 }

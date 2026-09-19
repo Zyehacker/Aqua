@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, Clock3, DownloadCloud, RotateCcw, X, XCircle, type LucideIcon } from 'lucide-react'
 import Button from '../../components/ui/Button'
+import ProgressBar from '../../components/ui/ProgressBar'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import type { DownloadJob } from '../../types'
 import { invoke, listen } from '../../utils/tauri'
+import { cn } from '../../utils/cn'
 import { useTranslation } from '../../useTranslation'
 
 const STATUS_ICON: Record<string, LucideIcon> = {
@@ -16,10 +18,16 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   cancelled: XCircle,
 }
 
-function statusClass(s: string) {
-  if (s === 'completed') return 'dl-status--ok'
-  if (s === 'failed' || s === 'cancelled') return 'dl-status--err'
-  return 'dl-status--active'
+// Map a download status to the app's chip palette for consistent row styling.
+function chipClass(s: string) {
+  if (s === 'completed') return 'chip-success'
+  if (s === 'failed' || s === 'cancelled') return 'chip-danger'
+  if (s === 'installing') return 'chip-accent'
+  return 'chip-aqua'
+}
+
+function isActive(s: string) {
+  return s === 'downloading' || s === 'queued' || s === 'installing'
 }
 
 function formatBytes(bytes: number) {
@@ -79,16 +87,17 @@ export default function DownloadsPage() {
     }
   }
 
-  const activeCount = jobs.filter((j) => j.status === 'downloading' || j.status === 'queued' || j.status === 'installing').length
+  const activeCount = jobs.filter((entry) => isActive(entry.status)).length
 
   return (
-    <div className="page">
+    <div className="page page-narrow">
       <div className="page-header">
         <div>
+          <p className="eyebrow">Transfers</p>
           <h1 className="page-title">{t('downloads.title')}</h1>
-          {activeCount > 0 ? (
-            <p className="page-subtitle">{activeCount} active</p>
-          ) : null}
+          <p className="page-subtitle">
+            {activeCount > 0 ? `${activeCount} active download${activeCount === 1 ? '' : 's'}` : 'Track instance, mod, and pack downloads.'}
+          </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void refresh()}>
           <RotateCcw size={13} />
@@ -97,42 +106,41 @@ export default function DownloadsPage() {
       </div>
 
       {jobs.length === 0 ? (
-        <div className="empty-shell">
+        <div className="dl-empty">
           <EmptyState
             title={t('downloads.empty')}
             description={t('downloads.emptyDescription')}
+            icon={<DownloadCloud size={20} />}
           />
         </div>
       ) : (
-        <div className="dl-list">
+        <div className="dl-panel">
           {jobs.map((job) => {
             const Icon = STATUS_ICON[job.status] ?? DownloadCloud
-            const isActive = job.status === 'downloading' || job.status === 'queued' || job.status === 'installing'
+            const active = isActive(job.status)
+            const statusLabel = t(`downloads.status.${job.status}`)
             const pct = job.percentage ?? 0
+
+            const detail = job.error
+              ? job.error
+              : `${formatBytes(job.downloaded_bytes)}${job.total_bytes ? ` / ${formatBytes(job.total_bytes)}` : ''}${job.speed ? ` · ${job.speed}` : ''}`
 
             return (
               <div key={job.id} className="dl-row">
-                <div className="dl-row__top">
+                <div className="dl-row__main">
+                  <span className={cn('dl-row__icon', job.status)}>
+                    <Icon size={16} />
+                  </span>
                   <div className="dl-row__info">
                     <strong className="dl-row__name">{job.name}</strong>
-                    <span className="dl-row__detail">
-                      {job.error ? (
-                        <span style={{ color: 'var(--danger)' }}>{job.error}</span>
-                      ) : (
-                        <>
-                          {formatBytes(job.downloaded_bytes)}
-                          {job.total_bytes ? ` / ${formatBytes(job.total_bytes)}` : ''}
-                          {job.speed ? ` · ${job.speed}` : ''}
-                        </>
-                      )}
-                    </span>
+                    <span className={cn('dl-row__detail', job.error && 'is-error')}>{detail}</span>
                   </div>
                   <div className="dl-row__right">
-                    <span className={`dl-status ${statusClass(job.status)}`}>
-                      <Icon size={12} />
-                      {t(`downloads.status.${job.status}`)}
+                    <span className={cn('chip', chipClass(job.status))}>
+                      <Icon size={11} />
+                      {statusLabel}
                     </span>
-                    {isActive ? (
+                    {active ? (
                       <button
                         type="button"
                         className="dl-cancel"
@@ -144,13 +152,14 @@ export default function DownloadsPage() {
                     ) : null}
                   </div>
                 </div>
-                {pct > 0 || isActive ? (
-                  <div className="dl-progress">
-                    <div
-                      className={`dl-progress__fill ${job.status === 'completed' ? 'done' : ''}`}
-                      style={{ width: `${Math.min(100, pct)}%` }}
-                    />
-                  </div>
+                {active ? (
+                  <ProgressBar
+                    className="dl-progress"
+                    value={pct}
+                    accent="aqua"
+                    showValue
+                    label={`${formatBytes(job.downloaded_bytes)}${job.total_bytes ? ` / ${formatBytes(job.total_bytes)}` : ''}${job.speed ? ` · ${job.speed}` : ''}`}
+                  />
                 ) : null}
               </div>
             )

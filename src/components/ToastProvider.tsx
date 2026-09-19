@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react'
 import type { ToastVariant } from '../types'
 import { ToastContext } from './toastContext'
+import { playUiSound } from '../utils/uiSound'
 
 type Toast = { id: string; message: string; variant: ToastVariant }
 
@@ -16,6 +17,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     visibleKeys.current.add(key)
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
     setToasts((current) => [...current, { id, message, variant }])
+    if (variant === 'error') playUiSound('error')
+    if (variant === 'success') playUiSound('notification')
     window.setTimeout(() => {
       visibleKeys.current.delete(key)
       setToasts((current) => current.filter((toast) => toast.id !== id))

@@ -1,16 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod auth;
+mod aqua_hud;
 mod download_manager;
 mod install;
 mod java;
 mod launch;
+mod launcher_service;
 mod mod_browser;
 mod mods;
 mod portable;
 mod richpresence;
+mod server_browser;
 mod settings;
-mod update;
 
 use std::sync::Mutex;
 
@@ -25,9 +27,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            update::start_updater_check_loop(app.handle().clone());
             // Restore window size/position/maximized from persisted settings (best-effort)
             let handle = app.handle();
             let win_opt = app.get_webview_window("main");
@@ -99,20 +99,31 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
             settings::save_settings,
+            aqua_hud::install_aqua_hud,
             settings::get_default_mc_dir,
             settings::list_versions,
             settings::generate_optimal_args,
             settings::detect_hardware,
             settings::read_logs,
+            settings::open_latest_log,
+            settings::open_logs_folder,
             java::ensure_java,
             java::list_java_runtimes,
-            launch::launch_minecraft,
             launch::is_running,
             launch::stop_minecraft,
+            launcher_service::resolve_launcher_state,
+            launcher_service::validate_launcher_for_launch,
+            launcher_service::launch_instance_v2,
             auth::msa_login,
             auth::msa_logout,
             auth::get_account_textures,
             auth::get_account,
+            auth::list_accounts,
+            auth::switch_account,
+            auth::remove_account,
+            auth::list_owned_capes,
+            auth::equip_cape,
+            auth::unequip_cape,
             install::list_remote_versions,
             install::list_fabric_loaders,
             install::list_forge_loaders,
@@ -153,9 +164,7 @@ fn main() {
             download_manager::resume_download,
             download_manager::cancel_download,
             download_manager::list_downloads,
-            update::check_for_update,
-            update::install_update,
-            update::restart_app,
+            server_browser::ping_server,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aqua Client");

@@ -1,4 +1,4 @@
 export const STARTUP_MOTION = {
-  splashDuration: 10000,
-  fade: 520,
+  splashDuration: 5000,
+  fade: 420,
 } as const

@@ -3,15 +3,93 @@ use std::{
     fs,
     io::{Cursor, Read},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
+/// Shared HTTP client so every project/version resolution reuses one connection
+/// pool (and backoff) instead of building a fresh client per call.
+fn shared_client() -> Arc<reqwest::Client> {
+    static CLIENT: OnceLock<Arc<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Arc::new(
+                reqwest::Client::builder()
+                    .user_agent("AquaClient/1.0")
+                    .timeout(Duration::from_secs(45))
+                    .connect_timeout(Duration::from_secs(15))
+                    .build()
+                    .expect("Aqua HTTP client failed to build"),
+            )
+        })
+        .clone()
+}
+
+struct VersionCacheEntry {
+    inserted_at: Instant,
+    versions: Vec<serde_json::Value>,
+}
+
+/// Process-wide cache of Modrinth version listings, keyed by project id.
+/// Resolving a mod's install also resolves every *required dependency*, and each
+/// one used to trigger a fresh HTTP round-trip — repeated every search/install
+/// and across sibling projects, which made Mods/Modpacks appear to hang.
+/// Caching collapses repeated lookups to a single request per project.
+fn version_cache() -> &'static Mutex<HashMap<String, VersionCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, VersionCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const VERSION_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const MODRINTH_MAX_ATTEMPTS: usize = 3;
+
+use futures_util::{stream, StreamExt};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+use tokio::time::sleep;
 
 use crate::mods::read_metadata;
 use crate::mods::{write_metadata, InstanceMetadata};
 use crate::settings::{append_launcher_log, atomic_write, default_mc_dir, instance_dir};
+
+async fn get_json_with_retry(
+    client: &reqwest::Client,
+    url: String,
+    context: &str,
+) -> Result<serde_json::Value, String> {
+    let mut last_error = String::from("request did not complete");
+
+    for attempt in 0..MODRINTH_MAX_ATTEMPTS {
+        match client.get(&url).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return response
+                        .json()
+                        .await
+                        .map_err(|error| format!("{context} response was invalid: {error}"));
+                }
+                last_error = format!("HTTP {status}");
+                if !(status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error()) {
+                    return Err(format!("{context} failed: {last_error}"));
+                }
+            }
+            Err(error) => {
+                last_error = error.to_string();
+                if !(error.is_timeout() || error.is_connect() || error.is_request()) {
+                    return Err(format!("{context} failed: {last_error}"));
+                }
+            }
+        }
+
+        if attempt + 1 < MODRINTH_MAX_ATTEMPTS {
+            sleep(Duration::from_millis(300 * (attempt as u64 + 1))).await;
+        }
+    }
+
+    Err(format!("{context} failed after {MODRINTH_MAX_ATTEMPTS} attempts: {last_error}"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModSearchResult {
@@ -321,18 +399,36 @@ async fn project_versions(
     client: &reqwest::Client,
     project_id: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    client
-        .get(format!(
-            "https://api.modrinth.com/v2/project/{project_id}/version"
-        ))
-        .send()
-        .await
-        .map_err(|e| format!("Modrinth request failed while resolving {project_id}: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Modrinth request failed while resolving {project_id}: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Modrinth response was invalid for {project_id}: {e}"))
+    {
+        let mut cache = version_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get(project_id) {
+            if entry.inserted_at.elapsed() < VERSION_CACHE_TTL {
+                return Ok(entry.versions.clone());
+            }
+            cache.remove(project_id);
+        }
+    }
+
+    let versions = get_json_with_retry(
+        client,
+        format!("https://api.modrinth.com/v2/project/{project_id}/version"),
+        &format!("Modrinth request while resolving {project_id}"),
+    )
+    .await?
+    .as_array()
+    .cloned()
+    .ok_or_else(|| format!("Modrinth response was invalid for {project_id}: expected an array"))?;
+
+    if let Ok(mut cache) = version_cache().lock() {
+        cache.insert(
+            project_id.to_string(),
+            VersionCacheEntry {
+                inserted_at: Instant::now(),
+                versions: versions.clone(),
+            },
+        );
+    }
+    Ok(versions)
 }
 
 async fn resolve_project(
@@ -568,10 +664,7 @@ pub async fn search_modrinth(
     loader_version: Option<String>,
     mc_dir: Option<String>,
 ) -> Result<Vec<ModSearchResult>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("AquaClient/1.0")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = shared_client();
 
     let mc_root = mc_dir.clone().map(PathBuf::from).or_else(default_mc_dir);
     let (resolved_mc_version, raw_loader, _resolved_loader_version, instance_name) = if let Some(
@@ -643,16 +736,7 @@ pub async fn search_modrinth(
         ),
     );
 
-    let mut resp: serde_json::Value = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("Modrinth request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| format!("Modrinth request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("Modrinth response was invalid: {e}"))?;
+    let mut resp = get_json_with_retry(&client, url.to_string(), "Modrinth search request").await?;
 
     if project_type_for(&category) == "datapack"
         && !resolved_mc_version.trim().is_empty()
@@ -671,21 +755,90 @@ pub async fn search_modrinth(
             "modrinth.search",
             &format!("No exact data-pack results for {}; retrying category search", resolved_mc_version),
         );
-        resp = client
-            .get(fallback)
-            .send()
-            .await
-            .map_err(|e| format!("Modrinth fallback request failed: {e}"))?
-            .error_for_status()
-            .map_err(|e| format!("Modrinth fallback request failed: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("Modrinth fallback response was invalid: {e}"))?;
+        resp = get_json_with_retry(&client, fallback.to_string(), "Modrinth fallback request").await?;
     }
 
     let wanted_type = project_type_for(&category).to_string();
     let hits = resp["hits"].as_array().cloned().unwrap_or_default();
     let had_hits = !hits.is_empty();
+
+    // Cheap pre-filter using the facet data Modrinth already returns per hit:
+    // `versions` (supported MC versions) and `categories` (loaders). Only
+    // projects that can plausibly match still pay for a full /version fetch,
+    // which removes the N+1 version storm that made Mods/Modpacks feel hung.
+    // Datapacks already fall back to a category-only query above, so a missing
+    // version match here is a genuine incompatibility, not a filtered faceting.
+    let wants_loader_filter = matches!(wanted_type.as_str(), "mod" | "modpack")
+        && !resolved_loader.trim().is_empty()
+        && resolved_loader != "vanilla";
+    let compatible_shortlist: Vec<&serde_json::Value> = hits
+        .iter()
+        .filter(|hit| hit["project_type"].as_str() == Some(&wanted_type))
+        .filter(|hit| {
+            if resolved_mc_version.trim().is_empty() {
+                return true;
+            }
+            hit["versions"]
+                .as_array()
+                .map(|versions| {
+                    versions
+                        .iter()
+                        .any(|value| value.as_str() == Some(&resolved_mc_version))
+                })
+                .unwrap_or(true) // metadata missing → let the real check decide
+        })
+        .filter(|hit| {
+            if !wants_loader_filter {
+                return true;
+            }
+            hit["categories"]
+                .as_array()
+                .map(|categories| {
+                    categories
+                        .iter()
+                        .any(|value| value.as_str().map(|v| v.eq_ignore_ascii_case(&resolved_loader)).unwrap_or(false))
+                })
+                .unwrap_or(true)
+        })
+        .collect();
+
+    // Prefetch all project versions concurrently (bounded) only for the
+    // shortlisted candidates. If any single call fails we record it and skip
+    // that project rather than aborting the whole search.
+    let hit_project_ids: Vec<String> = compatible_shortlist
+        .iter()
+        .filter_map(|hit| {
+            hit["project_id"]
+                .as_str()
+                .or_else(|| hit["id"].as_str())
+                .map(String::from)
+        })
+        .collect();
+    let versions_map: HashMap<String, Vec<serde_json::Value>> = {
+        let client_ref = &client;
+        stream::iter(hit_project_ids)
+            .map(|pid| async move {
+                let result = project_versions(client_ref, &pid).await;
+                (pid, result)
+            })
+            .buffer_unordered(6)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|(pid, result)| match result {
+                Ok(versions) => Some((pid, versions)),
+                Err(e) => {
+                    append_launcher_log(
+                        "warn",
+                        "modrinth.search",
+                        &format!("Skipping project {pid}: {e}"),
+                    );
+                    None
+                }
+            })
+            .collect()
+    };
+
     let mut out = Vec::new();
     let mut projects_inspected = 0usize;
     let mut versions_inspected = 0usize;
@@ -706,9 +859,11 @@ pub async fn search_modrinth(
             .unwrap_or("")
             .to_string();
 
-        let project_versions = project_versions(&client, &id)
-            .await
-            .map_err(|error| format!("Unable to reach Modrinth while resolving {id}: {error}"))?;
+        // Version data was fetched concurrently above; a missing entry means
+        // that project's call failed, so we skip it instead of failing the search.
+        let Some(project_versions) = versions_map.get(&id).cloned() else {
+            continue;
+        };
         versions_inspected += project_versions.len();
         minecraft_matches += project_versions
             .iter()
@@ -1387,6 +1542,7 @@ pub async fn install_modrinth_modpack(
         &InstanceMetadata {
             id: id.clone(),
             name: requested_name,
+            icon: "grass".into(),
             mc_version: mc_version.clone(),
             loader: loader.into(),
             loader_version: resolved_loader,
@@ -1418,7 +1574,10 @@ pub async fn install_default_fabric_mods(
         .user_agent("AquaClient/1.0")
         .build()
         .map_err(|e| e.to_string())?;
-    for slug in ["fabric-api", "modmenu", "sodium", "lithium", "iris"] {
+    let required = ["aqua-hud", "sodium", "lithium", "iris", "entityculling", "modmenu", "ferrite-core", "fabric-api"];
+    let mut required_project_ids = Vec::new();
+    let mut failures = Vec::new();
+    for slug in required {
         let result = async {
             let project: serde_json::Value = client
                 .get(format!("https://api.modrinth.com/v2/project/{slug}"))
@@ -1434,6 +1593,7 @@ pub async fn install_default_fabric_mods(
                 .as_str()
                 .ok_or_else(|| format!("Modrinth project not found: {slug}"))?
                 .to_string();
+            required_project_ids.push(project_id.clone());
             install_modrinth_project(
                 app.clone(),
                 project_id,
@@ -1456,9 +1616,74 @@ pub async fn install_default_fabric_mods(
                 "fabric.baseline",
                 &format!("Skipped {slug}: {error}"),
             );
+            failures.push(format!("{slug}: {error}"));
         }
     }
+    let mods_dir = read_metadata(mc_dir, instance_id)
+        .and_then(|metadata| metadata.game_dir.map(PathBuf::from))
+        .unwrap_or_else(|| instance_dir(mc_dir, instance_id))
+        .join("mods");
+    let installed = read_installed_projects(&mods_dir);
+    let missing = required_project_ids.iter().enumerate().filter(|(_, project_id)| {
+        !installed.iter().any(|item| item.project_id == **project_id)
+            || !mods_dir.join(installed.iter().find(|item| item.project_id == **project_id).map(|item| item.filename.as_str()).unwrap_or("")).is_file()
+    }).map(|(index, _)| required[index]).collect::<Vec<_>>();
+    if !failures.is_empty() || !missing.is_empty() {
+        return Err(format!("Fabric baseline installation incomplete. Missing: {}. Errors: {}", missing.join(", "), failures.join(" | ")));
+    }
     Ok(())
+}
+
+#[cfg(test)]
+fn compatible_version(version: &serde_json::Value, mc_version: &str, loader: &str) -> bool {
+    compatible_version_for(version, mc_version, loader, "mod").0
+}
+
+#[cfg(test)]
+fn numeric_version(value: &str) -> Vec<u64> {
+    value
+        .split('.')
+        .map(|part| part.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+#[cfg(test)]
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let mut left_parts = numeric_version(left);
+    let mut right_parts = numeric_version(right);
+    let length = left_parts.len().max(right_parts.len());
+    left_parts.resize(length, 0);
+    right_parts.resize(length, 0);
+    left_parts.cmp(&right_parts)
+}
+
+#[cfg(test)]
+fn version_satisfies(version: &str, requirement: &str) -> bool {
+    requirement.split_whitespace().all(|constraint| {
+        let (operator, expected) = if let Some(value) = constraint.strip_prefix(">=") {
+            (">=", value)
+        } else if let Some(value) = constraint.strip_prefix("<=") {
+            ("<=", value)
+        } else if let Some(value) = constraint.strip_prefix('>') {
+            (">", value)
+        } else if let Some(value) = constraint.strip_prefix('<') {
+            ("<", value)
+        } else if let Some(value) = constraint.strip_prefix('=') {
+            ("=", value)
+        } else {
+            ("=", constraint)
+        };
+
+        match (operator, compare_versions(version, expected)) {
+            (">=", ordering) => ordering != std::cmp::Ordering::Less,
+            ("<=", ordering) => ordering != std::cmp::Ordering::Greater,
+            (">", ordering) => ordering == std::cmp::Ordering::Greater,
+            ("<", ordering) => ordering == std::cmp::Ordering::Less,
+            ("=", ordering) => ordering == std::cmp::Ordering::Equal,
+            _ => false,
+        }
+    })
 }
 
 #[cfg(test)]

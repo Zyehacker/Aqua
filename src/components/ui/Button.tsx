@@ -1,8 +1,7 @@
 import { motion, type HTMLMotionProps } from 'framer-motion'
-import { type MouseEvent, type ReactNode, memo } from 'react'
+import { type ReactNode, memo } from 'react'
 import { cn } from '../../utils/cn'
-import { playUiSound } from '../../utils/uiSound'
-import { useAppStore } from '../../stores/appStore'
+import { playUiSound, type UiSoundTone } from '../../utils/uiSound'
 
 type Variant = 'primary' | 'aqua' | 'ghost' | 'danger'
 
@@ -11,6 +10,7 @@ type ButtonProps = Omit<HTMLMotionProps<'button'>, 'children'> & {
   size?: 'lg' | 'md' | 'sm' | 'icon'
   block?: boolean
   children: ReactNode
+  sound?: UiSoundTone
 }
 
 const variantClass: Record<Variant, string> = {
@@ -26,19 +26,10 @@ function Button({
   block = false,
   className,
   children,
+  sound,
   onClick,
   ...rest
 }: ButtonProps) {
-  const uiSounds = useAppStore((s) => s.uiSounds)
-  const soundVolume = useAppStore((s) => s.soundVolume)
-
-  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
-    onClick?.(event)
-    if (uiSounds && !event.defaultPrevented) {
-      playUiSound(variant === 'ghost' ? 'nav' : 'primary', soundVolume)
-    }
-  }
-
   return (
     <motion.button
       whileHover={{ y: -2 }}
@@ -53,11 +44,11 @@ function Button({
         block && 'btn-block',
         className,
       )}
-      onClick={handleClick}
+      onClick={(event) => { if (sound) playUiSound(sound); onClick?.(event) }}
       {...rest}
     >
       {typeof children === 'string' ? children : (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+        <span className="btn__content">
           {children}
         </span>
       )}

@@ -8,6 +8,10 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  optimizeDeps: {
+    // player-preview-test.html is a standalone import-map harness; it is not a Vite entry.
+    entries: ['index.html'],
+  },
   plugins: [
     react(),
     babel({ presets: [reactCompilerPreset()] }),

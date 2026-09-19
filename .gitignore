@@ -9,11 +9,19 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies / builds
 node_modules
 dist
 dist-ssr
-*.local
 target
+src-tauri/target/
+src-tauri/target-check/
+
+# Local environment
+*.local
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
@@ -26,6 +34,7 @@ target
 *.sln
 *.sw?
 
+# Release / planning files
 release-assets/
-
-release-assets/
+AQUA_V2_STATUS.md
+ACCOUNTS_PLAN.md

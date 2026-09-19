@@ -5,9 +5,12 @@ import Button from '../../components/ui/Button'
 import * as tauri from '../../utils/tauri'
 import type { BackendInstance } from '../../utils/tauri'
 import Card from '../../components/ui/Card'
+import InstanceIcon from '../../components/ui/InstanceIcon'
 import { EmptyState } from '../../components/ui/EmptyState'
+import LoadingIndicator from '../../components/ui/LoadingIndicator'
 import { useToast } from '../../hooks/useToast'
 import { formatInstanceDisplayName, formatInstanceHeading } from '../../utils/instanceDisplay'
+import { instanceStatus, statusClass } from '../../utils/instanceStatus'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useTranslation } from '../../useTranslation'
@@ -17,30 +20,23 @@ type CreateForm = { name: string; mcVersion: string; loader: 'vanilla' | 'fabric
 type ProvisioningStep = { stage: string; state: 'pending' | 'active' | 'complete' | 'failed'; message: string }
 
 const emptyForm: CreateForm = { name: '', mcVersion: '', loader: 'vanilla', loaderVersion: '' }
+const CREATE_TIMEOUT_MS = 3 * 60 * 1000
+const LOADER_TIMEOUT_MS = 30 * 1000
 
-function instanceStatus(instance: BackendInstance) {
-  const state = instance.install_state?.trim().toLowerCase() ?? ''
-  if (state === 'installed' || state === 'ready') return 'Ready'
-  if (state.includes('download')) return 'Downloading...'
-  if (state.includes('install')) return 'Installing...'
-  if (state.includes('validat')) return 'Validating...'
-  if (state.includes('fail') || state.includes('error')) return 'Failed'
-  return 'Not installed'
-}
-
-function statusClass(status: string) {
-  if (status === 'Ready') return 'chip-success'
-  if (status === 'Failed') return 'chip-danger'
-  if (status === 'Not installed') return 'chip-muted'
-  return 'chip-accent'
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeoutId: number | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+  })
 }
 
 export default function InstancesPage() {
   const { t } = useTranslation()
   const toast = useToast()
-  const { settings, versions, javaRuntimes, loading: launcherLoading, error: launcherError, refresh: refreshLauncher, selectInstance, detectJava, busy: launcherBusy, activeInstanceId } = useLauncherData()
-  const [instances, setInstances] = useState<BackendInstance[]>([])
-  const [loading, setLoading] = useState(true)
+  const { settings, instances, versions, javaRuntimes, loading: launcherLoading, refresh: refreshLauncher, selectInstance, detectJava, busy: launcherBusy, activeInstanceId } = useLauncherData()
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
@@ -48,13 +44,16 @@ export default function InstancesPage() {
   const [createError, setCreateError] = useState<string | null>(null)
   const [defaultMcDir, setDefaultMcDir] = useState<string | null>(null)
   const [loaderOptions, setLoaderOptions] = useState<LoaderOption[]>([])
+  const [createVersions, setCreateVersions] = useState<typeof versions>([])
   const [form, setForm] = useState<CreateForm>(emptyForm)
   const [editInstance, setEditInstance] = useState<BackendInstance | null>(null)
   const [editName, setEditName] = useState('')
+  const [editIconPath, setEditIconPath] = useState<string | null>(null)
   const [editMemory, setEditMemory] = useState('')
   const [editJavaArgs, setEditJavaArgs] = useState('')
   const [provisioningSteps, setProvisioningSteps] = useState<ProvisioningStep[]>([])
   const [instanceQuery, setInstanceQuery] = useState('')
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
   const creatingRef = useRef(false)
 
   useEffect(() => {
@@ -95,16 +94,14 @@ export default function InstancesPage() {
   }, [activeInstanceId, instances, settings, toast])
 
   const loadInstances = useCallback(async () => {
-    setLoading(true)
     setError(null)
     try {
-      setInstances((await tauri.listInstances(settings?.mc_dir)) ?? [])
+      await refreshLauncher()
+      setHasLoadedOnce(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to load instances.')
-    } finally {
-      setLoading(false)
     }
-  }, [settings])
+  }, [refreshLauncher])
 
   const importPackage = useCallback(async () => {
     try {
@@ -134,10 +131,10 @@ export default function InstancesPage() {
     }
     let cancelled = false
     const busyId = window.setTimeout(() => setLoaderBusy(true), 0)
-    const request = form.loader === 'fabric'
-      ? tauri.listFabricLoaders(form.mcVersion)
-      : tauri.listForgeLoaders(form.mcVersion)
-    request
+    const request: Promise<LoaderOption[] | null> = form.loader === 'fabric'
+      ? tauri.listFabricLoaders(form.mcVersion).then((options) => options?.map((option) => ({ version: option.version, stable: option.stable })) ?? null)
+      : tauri.listForgeLoaders(form.mcVersion).then((options) => options?.map((option) => ({ version: option.version, recommended: option.recommended })) ?? null)
+    withTimeout(request, LOADER_TIMEOUT_MS, `Unable to load ${form.loader} versions before the request timed out.`)
       .then((result) => {
         if (!cancelled) {
           const options = result ?? []
@@ -145,10 +142,10 @@ export default function InstancesPage() {
           setForm((current) => ({ ...current, loaderVersion: '' }))
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setLoaderOptions([])
-          setCreateError(`Unable to load ${form.loader} versions.`)
+          setCreateError(error instanceof Error ? error.message : `Unable to load ${form.loader} versions.`)
         }
       })
       .finally(() => {
@@ -165,20 +162,22 @@ export default function InstancesPage() {
     setCreateBusy(true)
     setCreateError(null)
     setProvisioningSteps([])
+    setCreateVersions(versions)
     try {
-      if (launcherLoading) {
-        setCreateError('Loading real launcher data…')
-        return
-      }
-      if (!versions.length) {
-        setCreateError(launcherError ?? 'No Minecraft versions are available. Check your connection and try again.')
-        await refreshLauncher()
-        return
+      if (launcherLoading) setCreateError('Minecraft versions are still loading. You can keep this dialog open while they arrive.')
+      let availableVersions = versions
+      if (!availableVersions.length) {
+        const fetched = await tauri.listRemoteVersions(settings?.show_snapshots ?? false)
+        if (fetched?.length) {
+          availableVersions = fetched
+          setCreateVersions(fetched)
+        }
+        else await refreshLauncher()
       }
       const nextDefaultDir = await tauri.getDefaultMcDir()
       setDefaultMcDir(nextDefaultDir)
       setForm((current) => {
-        const mcVersion = current.mcVersion || versions[0]?.id || ''
+        const mcVersion = current.mcVersion || availableVersions[0]?.id || ''
         return {
           ...current,
           mcVersion,
@@ -190,7 +189,7 @@ export default function InstancesPage() {
     } finally {
       setCreateBusy(false)
     }
-  }, [launcherError, launcherLoading, refreshLauncher, versions])
+  }, [launcherLoading, refreshLauncher, settings, versions])
 
   const launch = useCallback(async (id: string, name: string) => {
     toast.pushToast(`Starting ${name}…`, 'info')
@@ -238,6 +237,7 @@ export default function InstancesPage() {
   const openEdit = useCallback((instance: BackendInstance) => {
     setEditInstance(instance)
     setEditName(instance.name)
+    setEditIconPath(null)
     setEditMemory(String(instance.memory_mb ?? settings?.ram_mb ?? 2048))
     setEditJavaArgs(instance.java_args ?? settings?.jvm_args ?? '')
   }, [settings])
@@ -251,6 +251,7 @@ export default function InstancesPage() {
         memory_mb: Math.max(512, Number(editMemory) || 2048),
         java_args: editJavaArgs,
       }, settings?.mc_dir)
+      if (editIconPath) await tauri.saveInstanceIcon(editInstance.id, editIconPath, settings?.mc_dir)
       await refreshLauncher()
       await loadInstances()
       setEditInstance(null)
@@ -258,7 +259,7 @@ export default function InstancesPage() {
     } catch (error) {
       toast.pushToast(error instanceof Error ? error.message : 'Unable to save instance settings.', 'error')
     }
-  }, [editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
+  }, [editIconPath, editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
 
   const filteredInstances = useMemo(() => {
     const query = instanceQuery.trim().toLowerCase()
@@ -285,18 +286,27 @@ export default function InstancesPage() {
     setCreateBusy(true)
     setCreateError(null)
     try {
-      const id = await tauri.createInstance(form.name.trim(), form.mcVersion, form.loader, form.loaderVersion || null, settings.mc_dir ?? defaultMcDir)
+      const mcDir = settings.mc_dir ?? defaultMcDir
+      const id = await withTimeout(
+        tauri.createInstance(form.name.trim(), form.mcVersion, form.loader, form.loaderVersion || null, mcDir),
+        CREATE_TIMEOUT_MS,
+        'Instance creation timed out while provisioning files. Check the launcher logs and retry.',
+      )
       if (!id) throw new Error('Instance creation did not return an instance ID.')
       await tauri.updateInstance(id, {
         memory_mb: settings.ram_mb,
         java_args: settings.jvm_args,
-      }, settings.mc_dir ?? defaultMcDir)
-      await selectInstance(id)
+      }, mcDir)
       await refreshLauncher()
+      const created = await tauri.getInstance(id, mcDir)
+      if (!created || created.id !== id || created.mc_version !== form.mcVersion || created.loader !== form.loader) {
+        throw new Error('Instance provisioning completed, but the new instance could not be read back from storage.')
+      }
+      await selectInstance(id)
+      await loadInstances()
       toast.pushToast('Instance created', 'success')
       setCreateOpen(false)
       setForm(emptyForm)
-      await loadInstances()
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : 'Unable to create instance.')
     } finally {
@@ -346,11 +356,10 @@ export default function InstancesPage() {
         </div>
       ) : null}
 
-      {loading ? (
-        <div className="grid-2" aria-busy="true">
-          <div className="skeleton" style={{ height: 190 }} />
-          <div className="skeleton" style={{ height: 190 }} />
-        </div>
+      {!hasLoadedOnce && launcherLoading ? (
+        <Card>
+          <LoadingIndicator label={t('common.loading')} detail="Loading your instances…" />
+        </Card>
       ) : instances.length === 0 ? (
         <Card>
           <EmptyState
@@ -368,7 +377,7 @@ export default function InstancesPage() {
         {filteredInstances.length === 0 ? (
           <Card><EmptyState title="No matching instances" description="Try a different name, Minecraft version, or loader." /></Card>
         ) : <div className="grid-2">
-          {filteredInstances.map((instance, index) => {
+          {filteredInstances.map((instance) => {
             const displayName = formatInstanceDisplayName(instance)
             const heading = formatInstanceHeading(instance)
             const status = instanceStatus(instance)
@@ -382,13 +391,13 @@ export default function InstancesPage() {
               className="instance-card"
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.22, delay: index * 0.04 }}
+              transition={{ duration: 0.22 }}
             >
               <div className="instance-card__top">
-                <div>
+                <div className="instance-card__identity"><InstanceIcon instance={instance} size={20} /><div>
                   <strong className="instance-card__name">{heading}</strong>
                   <p className="instance-card__meta">{subtitle}</p>
-                </div>
+                </div></div>
                 <span className={`chip ${statusClass(status)}`}>{status}</span>
               </div>
 
@@ -477,14 +486,14 @@ export default function InstancesPage() {
                 </label>
                 <label className="field">
                   <span>Minecraft version</span>
-                  <select value={form.mcVersion} onChange={(event) => setForm((current) => ({ ...current, mcVersion: event.target.value, loaderVersion: '' }))} disabled={createBusy || !versions.length}>
-                    <option value="">{createBusy ? 'Loading...' : 'Select version'}</option>
-                    {versions.map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}
+                  <select value={form.mcVersion} onChange={(event) => setForm((current) => ({ ...current, mcVersion: event.target.value, loaderVersion: '' }))} disabled={!createVersions.length}>
+                    <option value="">{launcherLoading && !createVersions.length ? 'Loading versions…' : 'Select version'}</option>
+                    {createVersions.map((version) => <option key={version.id} value={version.id}>{version.id}</option>)}
                   </select>
                 </label>
                 <label className="field">
                   <span>Loader</span>
-                  <select value={form.loader} onChange={(event) => setForm((current) => ({ ...current, loader: event.target.value as CreateForm['loader'], loaderVersion: '' }))} disabled={createBusy}>
+                  <select value={form.loader} onChange={(event) => setForm((current) => ({ ...current, loader: event.target.value as CreateForm['loader'], loaderVersion: '' }))} disabled={false}>
                     <option value="vanilla">Vanilla</option>
                     <option value="fabric">Fabric</option>
                     <option value="forge">Forge</option>
@@ -492,7 +501,7 @@ export default function InstancesPage() {
                 </label>
                 <label className="field field-wide">
                   <span>Loader version</span>
-                  <select value={form.loaderVersion} onChange={(event) => setForm((current) => ({ ...current, loaderVersion: event.target.value }))} disabled={createBusy || form.loader === 'vanilla' || loaderBusy || !loaderOptions.length}>
+                  <select value={form.loaderVersion} onChange={(event) => setForm((current) => ({ ...current, loaderVersion: event.target.value }))} disabled={form.loader === 'vanilla' || loaderBusy || !loaderOptions.length}>
                     {!loaderOptions.length ? <option value="">{form.loader === 'vanilla' ? 'Not applicable' : loaderBusy ? 'Loading...' : 'Unavailable'}</option> : null}
                     {form.loader !== 'vanilla' && loaderOptions.length ? <option value="">Automatic</option> : null}
                     {loaderOptions.map((option) => <option key={option.version} value={option.version}>{option.version}</option>)}
@@ -534,7 +543,7 @@ export default function InstancesPage() {
                 <Button type="button" variant="ghost" disabled={createBusy} onClick={() => setCreateOpen(false)}>{t('common.cancel')}</Button>
                 <Button type="submit" variant="aqua" disabled={createBusy || loaderBusy || !form.name.trim() || !form.mcVersion || (!settings?.java_path && !settings?.java_runtime)}>
                   {createBusy ? <LoaderCircle size={16} className="spin" /> : <Plus size={16} />}
-                  {createBusy ? t('instances.creating') : t('common.createInstance')}
+                  {createBusy ? (provisioningSteps.at(-1)?.message ?? t('instances.creating')) : t('common.createInstance')}
                 </Button>
               </div>
             </form>
@@ -550,12 +559,19 @@ export default function InstancesPage() {
               <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setEditInstance(null)}><X size={16} /></Button>
             </div>
             <form onSubmit={saveEdit}>
-              <div className="form-grid">
-                <label className="field field-wide"><span>Name</span><input value={editName} onChange={(event) => setEditName(event.target.value)} /></label>
-                <label className="field"><span>Memory (MB)</span><input type="number" min="512" step="512" value={editMemory} onChange={(event) => setEditMemory(event.target.value)} /></label>
-                <label className="field"><span>Java runtime</span><input value={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} readOnly /></label>
-                <label className="field field-wide"><span>Game directory</span><input value={editInstance.game_dir ?? 'Default instance folder'} readOnly /></label>
-                <label className="field field-wide"><span>Java arguments</span><textarea rows={4} value={editJavaArgs} onChange={(event) => setEditJavaArgs(event.target.value)} /></label>
+              <div className="instance-editor">
+                <fieldset className="instance-editor__group"><legend>Identity</legend><div className="form-grid">
+                  <label className="field field-wide"><span>Name</span><input value={editName} onChange={(event) => setEditName(event.target.value)} /></label>
+                  <div className="field field-wide"><span>Instance icon</span><div className="instance-icon-picker"><img src={editInstance.icon_data || '/favicon.png'} alt="Current instance icon" /><div><strong>{editIconPath ? 'PNG selected' : editInstance.icon_data ? 'Custom PNG' : 'Aqua default PNG'}</strong><small>Local PNG only. Stored in this instance.</small></div><Button type="button" variant="ghost" size="sm" onClick={async () => { const path = await open({ filters: [{ name: 'PNG image', extensions: ['png'] }], multiple: false, directory: false }); if (typeof path === 'string') setEditIconPath(path) }}>Choose PNG</Button></div></div>
+                </div></fieldset>
+                <fieldset className="instance-editor__group"><legend>Runtime</legend><div className="form-grid">
+                  <label className="field field-wide"><span>Java runtime</span><input value={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} readOnly title={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} /></label>
+                  <label className="field field-wide"><span>Game directory</span><input value={editInstance.game_dir ?? 'Default instance folder'} readOnly title={editInstance.game_dir ?? 'Default instance folder'} /></label>
+                </div></fieldset>
+                <fieldset className="instance-editor__group"><legend>Memory</legend><div className="form-grid">
+                  <label className="field"><span>Memory (MB)</span><input type="number" min="512" step="512" value={editMemory} onChange={(event) => setEditMemory(event.target.value)} /></label>
+                </div></fieldset>
+                <details className="instance-editor__advanced"><summary>Advanced / JVM arguments</summary><label className="field"><span>Java arguments</span><textarea rows={2} value={editJavaArgs} onChange={(event) => setEditJavaArgs(event.target.value)} /></label></details>
               </div>
               <div className="dialog__actions"><Button variant="ghost" type="button" onClick={() => setEditInstance(null)}>{t('common.cancel')}</Button><Button variant="aqua" type="submit">{t('common.saveChanges')}</Button></div>
             </form>

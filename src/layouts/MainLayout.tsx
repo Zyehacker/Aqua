@@ -1,15 +1,16 @@
 import { Outlet, useLocation } from 'react-router-dom'
-import { AnimatePresence, motion } from 'framer-motion'
 import { Suspense, useEffect } from 'react'
 import { Coffee } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import TopNav from '../components/layout/TopNav'
 import AppBackground from '../components/layout/AppBackground'
-import UpdateModal from '../components/updater/UpdateModal'
 import { PageSkeleton } from '../components/ui/Skeleton'
 import { appActions } from '../stores/appStore'
 import { useToast } from '../hooks/useToast'
 import { EXTERNAL_LINKS } from '../config/externalLinks'
+import { useLauncherData } from '../hooks/useLauncherDataHook'
+import AccountOverlay from '../components/account/AccountOverlay'
+import MaintenanceBanner from '../components/maintenance/MaintenanceBanner'
 
 function DiscordIcon() {
   return (
@@ -25,6 +26,7 @@ function DiscordIcon() {
 export default function MainLayout() {
   const location = useLocation()
   const toast = useToast()
+  const { activeInstance, busy } = useLauncherData()
 
   useEffect(() => {
     appActions.closeOverlays()
@@ -43,23 +45,21 @@ export default function MainLayout() {
     <div className="app-shell">
       <AppBackground />
       <TopNav />
+      <MaintenanceBanner />
       <div className="app-shell__body">
         <div className="app-shell__content">
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.div
-              key={location.pathname}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1] }}
-              style={{ minHeight: '100%' }}
-            >
-              <Suspense fallback={<PageSkeleton />}>
-                <Outlet />
-              </Suspense>
-            </motion.div>
-          </AnimatePresence>
+          <div key={location.pathname} style={{ minHeight: '100%' }}>
+            <Suspense fallback={<PageSkeleton />}>
+              <Outlet />
+            </Suspense>
+          </div>
         </div>
+      </div>
+
+      <div className="bottom-utility-bar" aria-label="Launcher status">
+        <span className="bottom-utility-bar__dot" />
+        <span>{busy ? busy.replace(/^./, (value) => value.toUpperCase()) : 'Ready'}</span>
+        {activeInstance ? <span className="bottom-utility-bar__instance">{activeInstance.name} · {activeInstance.mc_version}</span> : <span className="bottom-utility-bar__instance">No instance selected</span>}
       </div>
 
       <div className="social-float" aria-label="Community links">
@@ -81,7 +81,7 @@ export default function MainLayout() {
         </button>
       </div>
 
-      <UpdateModal />
+      <AccountOverlay />
     </div>
   )
 }

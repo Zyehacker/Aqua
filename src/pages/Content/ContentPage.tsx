@@ -19,7 +19,7 @@ import {
 import { useNavigate } from 'react-router-dom'
 import Button from '../../components/ui/Button'
 import SearchInput from '../../components/ui/SearchInput'
-import ProgressBar from '../../components/ui/ProgressBar'
+import LoadingIndicator from '../../components/ui/LoadingIndicator'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
 import { fetchInstalledItems, fetchRemoteContent, invalidateContentCache } from '../../services/contentService'
@@ -70,6 +70,11 @@ const CATEGORY_META: Record<
     soft: 'var(--primary-soft)',
   },
 }
+
+// Render the content list in bounded windows so a long (installed) list never
+// mounts every row at once — which would both stall the DOM and fire every icon
+// <img> request simultaneously. "Show more" pages through the rest.
+const RESULT_STEP = 20
 
 const NAV: Array<{ id: ContentCategory; label: string; icon: typeof Gauge }> = [
   { id: 'overview', label: 'Overview', icon: Gauge },
@@ -274,21 +279,31 @@ function DetailPanel({
       </a>
 
       <div className="content-detail__footer">
-        <ProgressBar value={item.installed ? 100 : 0} label={item.installed ? 'Installed' : 'Ready to install'} showValue />
+        {installing ? (
+          <div className="content-installing">
+            <LoaderCircle size={15} className="spin" />
+            <span>Installing…</span>
+          </div>
+        ) : null}
         <div style={{ marginTop: 14 }}>
-          <Button
-            block
-            disabled={installing || (categoryIsMod(item.category) && activeLoader === 'vanilla')}
-            onClick={() => onInstall(item)}
-          >
-            {installing ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-            {item.installed ? 'Reinstall' : 'Install'}
-          </Button>
           {item.installed ? (
-            <Button block variant="danger" disabled={installing} onClick={() => onRemove(item)}>
-              Remove
+            <>
+              <div className="content-installed-state">Installed</div>
+              <Button block onClick={() => onInstall(item)}>Reinstall</Button>
+              <Button block variant="danger" disabled={installing} onClick={() => onRemove(item)}>
+                Remove
+              </Button>
+            </>
+          ) : (
+            <Button
+              block
+              disabled={installing || (categoryIsMod(item.category) && activeLoader === 'vanilla')}
+              onClick={() => onInstall(item)}
+            >
+              <Download size={16} />
+              Install
             </Button>
-          ) : null}
+          )}
         </div>
       </div>
     </aside>
@@ -324,8 +339,14 @@ function BrowsePanel({
   activeInstance: tauri.BackendInstance | null
   mcDir?: string | null
 }) {
+  const { t } = useTranslation()
   const toast = useToast()
   const meta = CATEGORY_META[category]
+  // CATEGORY_META stores the i18n *key* (e.g. 'content.mods'). Resolve once
+  // here and drive every display string from it, so the loading label, search
+  // placeholder and empty states never leak a raw `content.*` key.
+  const displayLabel = t(meta.label)
+  const displayDescription = t(meta.description)
   const [tab, setTab] = useState<'browse' | 'installed'>('browse')
   const [platform, setPlatform] = useState<ContentPlatform>('modrinth')
   const [sort, setSort] = useState('downloads')
@@ -336,12 +357,36 @@ function BrowsePanel({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
+  const [installProgress, setInstallProgress] = useState<{ percentage: number; message: string; done: number; total: number } | null>(null)
   const [reload, setReload] = useState(0)
+  const [loaderFilter, setLoaderFilter] = useState('all')
+  const [compatibilityFilter, setCompatibilityFilter] = useState('all')
+  const [shown, setShown] = useState(RESULT_STEP)
 
   const mcVersion = activeInstance?.mc_version || null
   const loader = activeInstance?.loader || null
 
   useEffect(() => {
+    let dispose: (() => void) | null = null
+    void tauri.listen<{ phase?: string; message?: string; percentage?: number; done?: number; total?: number }>('install-status', (event) => {
+      if (event.phase === 'done') {
+        setInstallProgress(null)
+        return
+      }
+      if (event.phase === 'downloading' || event.phase === 'prepared' || event.phase === 'installing') {
+        setInstallProgress({ percentage: Math.max(0, Math.min(100, event.percentage ?? (event.phase === 'installing' ? 100 : 0))), message: event.message ?? 'Installing content', done: event.done ?? 0, total: event.total ?? 0 })
+      }
+    }).then((cleanup) => { dispose = cleanup })
+    return () => dispose?.()
+  }, [])
+
+  // Browse and Installed use separate effects so switching tabs never discards
+  // the already-loaded list. Each effect cancels stale work on retrigger.
+  const baseCategory = category
+
+  // Installed list — reloads whenever the installed data may have changed.
+  useEffect(() => {
+    if (tab !== 'installed') return
     let cancelled = false
     const load = async () => {
       if (!activeInstance) {
@@ -351,21 +396,12 @@ function BrowsePanel({
       }
       setLoading(true)
       setLoadError(null)
+      setShown(RESULT_STEP)
       try {
-        if (tab === 'installed') {
-          const list = await fetchInstalledItems(category, activeInstance?.id, mcDir)
-          if (!cancelled) setItems(list)
-        } else {
-          const list = await fetchRemoteContent(
-            category,
-            query,
-            mcVersion,
-            loader,
-            activeInstance?.id ?? null,
-            activeInstance?.loader_version ?? null,
-            mcDir,
-          )
-          if (!cancelled) setItems(list)
+        const list = await fetchInstalledItems(baseCategory, activeInstance?.id, mcDir)
+        if (!cancelled) {
+          setItems(list)
+          setLoadError(null)
         }
       } catch (err) {
         if (!cancelled) {
@@ -376,29 +412,77 @@ function BrowsePanel({
         if (!cancelled) setLoading(false)
       }
     }
-
-    const timer = window.setTimeout(load, 300)
+    const timer = window.setTimeout(load, 30)
     return () => {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [category, tab, query, mcVersion, loader, activeInstance, activeInstance?.id, mcDir, reload])
+  }, [tab, baseCategory, activeInstance, activeInstance?.id, mcDir, reload])
+
+  // Browse — debounced on query so typing doesn't fire a request per keystroke.
+  useEffect(() => {
+    if (tab !== 'browse') return
+    let cancelled = false
+    const load = async () => {
+      if (!activeInstance) {
+        setItems([])
+        setLoadError(null)
+        setLoading(false)
+        return
+      }
+      setShown(RESULT_STEP)
+      setLoading(true)
+      setLoadError(null)
+      try {
+        const list = await fetchRemoteContent(
+          baseCategory,
+          query,
+          mcVersion,
+          loader,
+          activeInstance?.id ?? null,
+          activeInstance?.loader_version ?? null,
+          mcDir,
+        )
+        if (!cancelled) {
+          setItems(list)
+          setLoadError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setItems([])
+          setLoadError(err instanceof Error ? err.message : 'Unable to load content from Modrinth.')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    const timer = window.setTimeout(load, 350)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [tab, baseCategory, query, mcVersion, loader, activeInstance, activeInstance?.id, mcDir, reload])
 
   const sortedItems = useMemo(() => {
-    const list = [...items]
+    const list = items.filter((item) => {
+      const matchesLoader = loaderFilter === 'all' || item.loaders?.some((value) => value.toLowerCase() === loaderFilter)
+      const matchesCompatibility = compatibilityFilter === 'all' || item.compatibility === compatibilityFilter
+      return matchesLoader && matchesCompatibility
+    })
     list.sort((a, b) => {
       if (sort === 'name') return a.name.localeCompare(b.name)
       return (Number.parseFloat(b.downloads) || 0) - (Number.parseFloat(a.downloads) || 0)
     })
     if (order === 'asc') list.reverse()
     return list
-  }, [items, order, sort])
+  }, [compatibilityFilter, items, loaderFilter, order, sort])
 
   const selected = sortedItems.find((item) => item.id === selectedId) ?? sortedItems[0] ?? null
 
   const handleRemove = async (item: ContentItem) => {
     if (!activeInstance || !item.installed) return
     setInstallingId(item.id)
+    setInstallProgress({ percentage: 0, message: `Preparing ${item.name}`, done: 0, total: 0 })
     try {
       await tauri.removeInstanceItem(item.id, activeInstance.id, category, mcDir)
       invalidateContentCache()
@@ -410,6 +494,7 @@ function BrowsePanel({
       toast.pushToast(error instanceof Error ? error.message : 'Unable to remove content.', 'error')
     } finally {
       setInstallingId(null)
+      setInstallProgress(null)
     }
   }
 
@@ -452,9 +537,9 @@ function BrowsePanel({
         <div className="content-main__header">
           <div>
             <h2 className="page-title" style={{ fontSize: 28 }}>
-              {meta.label}
+              {displayLabel}
             </h2>
-            <p className="page-subtitle">{meta.description}</p>
+            <p className="page-subtitle">{displayDescription}</p>
           </div>
           <Button variant="ghost" size="icon" aria-label="Back to overview" onClick={onClose}>
             <X size={18} />
@@ -494,6 +579,7 @@ function BrowsePanel({
             >
               Modrinth
             </button>
+            <button type="button" disabled title="CurseForge integration is not available yet">CurseForge</button>
           </div>
 
           <Button
@@ -509,38 +595,43 @@ function BrowsePanel({
                 const list = await fetchRemoteContent(category, query, mcVersion, loader, activeInstance?.id ?? null, activeInstance?.loader_version ?? null, mcDir)
                 setItems(list)
               }
-              toast.pushToast(`${meta.label} refreshed`, 'success')
+              toast.pushToast(`${displayLabel} refreshed`, 'success')
             }}
           >
             <RefreshCw size={16} />
           </Button>
         </div>
+        {installProgress ? <div className="content-download-progress" role="status" aria-live="polite"><div className="content-download-progress__head"><span>{installProgress.message}</span><strong>{Math.round(installProgress.percentage)}%</strong></div><div className="content-download-progress__track"><div className="content-download-progress__fill" style={{ width: `${installProgress.percentage}%` }} /></div>{installProgress.total > 1 ? <small>Dependency {installProgress.done + 1} of {installProgress.total}</small> : null}</div> : null}
 
         <SearchInput
           id={`search-${category}`}
           value={query}
           onChange={setQuery}
-          placeholder={`Search ${meta.label.toLowerCase()}...`}
+          placeholder={`Search ${displayLabel.toLowerCase()}...`}
         />
 
-        <div className="content-list" role="listbox" aria-label={meta.label}>
+        <div className="content-filters" aria-label="Content filters">
+          <label className="select-pill"><span>Loader</span><select value={loaderFilter} onChange={(event) => setLoaderFilter(event.target.value)}><option value="all">All</option><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="quilt">Quilt</option></select></label>
+          <label className="select-pill"><span>Compatibility</span><select value={compatibilityFilter} onChange={(event) => setCompatibilityFilter(event.target.value)}><option value="all">All</option><option value="Compatible">Compatible</option><option value="Incompatible">Incompatible</option><option value="NoVersion">No version</option></select></label>
+        </div>
+
+        <div className="content-list" role="listbox" aria-label={displayLabel}>
           {loadError ? (
             <EmptyState title={contentErrorTitle(loadError)} description={loadError} actionLabel="Retry" onAction={() => setReload((value) => value + 1)} />
           ) : !activeInstance ? (
             <EmptyState title="Select an install target" description="Choose an instance in the sidebar before browsing or installing content." />
           ) : loading ? (
-            <div style={{ display: 'flex', justifyContent: 'center', padding: 40 }}>
-              <LoaderCircle size={24} className="spin" color="var(--primary)" />
-            </div>
+            <LoadingIndicator label={`Loading ${displayLabel.toLowerCase()}`} detail={activeInstance ? `For ${formatInstanceHeading(activeInstance)}` : undefined} />
           ) : sortedItems.length === 0 ? (
             <EmptyState
-              title={tab === 'installed' ? `No installed ${meta.label.toLowerCase()}` : 'No results'}
+              title={tab === 'installed' ? `No installed ${displayLabel.toLowerCase()}` : 'No results'}
               description={tab === 'installed' ? 'No items installed in this instance folder.' : 'Try another search term.'}
               actionLabel={query ? 'Clear search' : undefined}
               onAction={() => setQuery('')}
             />
           ) : (
-            sortedItems.map((item) => (
+            <>
+            {sortedItems.slice(0, shown).map((item) => (
               <button
                 key={item.id}
                 type="button"
@@ -559,12 +650,21 @@ function BrowsePanel({
                   <strong>{item.name}</strong>
                   <span>{item.author}</span>
                 </div>
-                <div className="content-item__downloads">
-                  <Download size={13} />
-                  {item.downloads}
+                <div className={cn('content-item__downloads', item.compatibility === 'Incompatible' && 'content-item__downloads--danger')}>
+                  {item.installed ? 'Installed' : item.compatibility}
                 </div>
               </button>
-            ))
+            ))}
+            {shown < sortedItems.length ? (
+              <button
+                type="button"
+                className="content-item content-item--more"
+                onClick={() => setShown((value) => value + RESULT_STEP)}
+              >
+                Show {Math.min(RESULT_STEP, sortedItems.length - shown)} more of {sortedItems.length}
+              </button>
+            ) : null}
+            </>
           )}
         </div>
       </section>
@@ -592,13 +692,13 @@ export default function ContentPage() {
       <div className={cn('content-shell', category !== 'overview' && 'with-detail')}>
         <ContentSidebar active={category} onSelect={setCategory} profileLabel={profileLabel} instances={instances} activeInstanceId={activeInstanceId} onInstanceChange={(id) => void selectInstance(id)} />
 
-        <AnimatePresence mode="wait" initial={false}>
+        <AnimatePresence initial={false}>
           <motion.div
             key={category}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.2 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
             style={{ display: 'contents' }}
           >
             {category === 'overview' ? (

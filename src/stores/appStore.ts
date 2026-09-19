@@ -2,17 +2,17 @@ import { useSyncExternalStore } from 'react'
 
 type ThemeMode = 'dark' | 'dim'
 type AccentMode = 'aqua' | 'cyan' | 'mint' | 'lavender' | 'amber'
-export type BackgroundChoice = 'random' | 'background1' | 'background2' | 'background3' | 'background4' | 'background5'
-
+type BackgroundMode = 'default' | 'solid' | 'gradient' | 'video'
+type LayoutDensity = 'comfortable' | 'compact'
 type AppState = {
   theme: ThemeMode
   accent: AccentMode | 'custom'
   accentColor: string
-  uiSounds: boolean
-  soundVolume: number
   reduceMotion: boolean
-  density: 'comfortable' | 'compact'
-  background: BackgroundChoice
+  uiSounds: boolean
+  uiSoundVolume: number
+  backgroundMode: BackgroundMode
+  layoutDensity: LayoutDensity
   notificationsOpen: boolean
   accountOpen: boolean
   mobileNavOpen: boolean
@@ -31,15 +31,21 @@ let state: AppState = {
   theme: (window.localStorage.getItem('aqua.theme') as ThemeMode | null) ?? 'dark',
   accent: readStorage<AccentMode | 'custom'>('aqua.accent', 'aqua'),
   accentColor: readStorage<string>('aqua.accentColor', '#58dfd1'),
-  uiSounds: readStorage<boolean>('aqua.uiSounds', true),
-  soundVolume: readStorage<number>('aqua.soundVolume', 0.28),
   reduceMotion: readStorage<boolean>('aqua.reduceMotion', window.matchMedia('(prefers-reduced-motion: reduce)').matches),
-  density: readStorage<'comfortable' | 'compact'>('aqua.density', 'comfortable'),
-  background: readStorage<BackgroundChoice>('aqua.background', 'background1'),
+  uiSounds: readStorage<boolean>('aqua.uiSounds', true),
+  uiSoundVolume: readStorage<number>('aqua.uiSoundVolume', 0.28),
+  backgroundMode: readStorage<BackgroundMode>('aqua.backgroundMode', 'default'),
+  layoutDensity: readStorage<LayoutDensity>('aqua.layoutDensity', 'comfortable'),
   notificationsOpen: false,
   accountOpen: false,
   mobileNavOpen: false,
 }
+
+// Apply persisted data attributes on load
+document.documentElement.dataset.theme = state.theme
+document.documentElement.dataset.reduceMotion = state.reduceMotion ? 'true' : 'false'
+document.documentElement.dataset.background = state.backgroundMode
+document.documentElement.dataset.density = state.layoutDensity
 
 const listeners = new Set<() => void>()
 
@@ -78,16 +84,15 @@ function setState(partial: Partial<AppState>) {
     document.documentElement.dataset.reduceMotion = partial.reduceMotion ? 'true' : 'false'
     persist('aqua.reduceMotion', partial.reduceMotion)
   }
-  if (partial.uiSounds !== undefined) {
-    persist('aqua.uiSounds', partial.uiSounds)
+  if (partial.uiSounds !== undefined) persist('aqua.uiSounds', partial.uiSounds)
+  if (partial.uiSoundVolume !== undefined) persist('aqua.uiSoundVolume', partial.uiSoundVolume)
+  if (partial.backgroundMode) {
+    document.documentElement.dataset.background = partial.backgroundMode
+    persist('aqua.backgroundMode', partial.backgroundMode)
   }
-  if (partial.soundVolume !== undefined) {
-    persist('aqua.soundVolume', partial.soundVolume)
-  }
-  if (partial.density) {
-    document.documentElement.dataset.density = partial.density
-    document.documentElement.style.setProperty('--space-unit', partial.density === 'compact' ? '0.82' : '1')
-    persist('aqua.density', partial.density)
+  if (partial.layoutDensity) {
+    document.documentElement.dataset.density = partial.layoutDensity
+    persist('aqua.layoutDensity', partial.layoutDensity)
   }
   emit()
 }
@@ -116,24 +121,19 @@ export const appActions = {
   setCustomAccent(hex: string) {
     setState({ accent: 'custom', accentColor: hex })
   },
-  setUiSounds(enabled: boolean) {
-    setState({ uiSounds: enabled })
-  },
-  setSoundVolume(volume: number) {
-    setState({ soundVolume: volume })
-  },
   setReduceMotion(enabled: boolean) {
     setState({ reduceMotion: enabled })
   },
-  setDensity(density: AppState['density']) {
-    setState({ density })
-  },
-  setBackground(background: BackgroundChoice) {
-    setState({ background })
-    persist('aqua.background', background)
-  },
+  setUiSounds(enabled: boolean) { setState({ uiSounds: enabled }) },
+  setUiSoundVolume(volume: number) { setState({ uiSoundVolume: Math.max(0, Math.min(1, volume)) }) },
   toggleTheme() {
     setState({ theme: state.theme === 'dark' ? 'dim' : 'dark' })
+  },
+  setBackgroundMode(mode: BackgroundMode) {
+    setState({ backgroundMode: mode })
+  },
+  setLayoutDensity(density: LayoutDensity) {
+    setState({ layoutDensity: density })
   },
   toggleNotifications() {
     setState({ notificationsOpen: !state.notificationsOpen, accountOpen: false })

@@ -18,6 +18,22 @@ pub struct Settings {
     pub mc_dir: Option<String>,
     #[serde(default)]
     pub instance_id: Option<String>,
+    #[serde(default)]
+    pub offline_mode: bool,
+    #[serde(default = "default_offline_profile_name")]
+    pub offline_profile_name: String,
+    #[serde(default)]
+    pub offline_profiles: Vec<OfflineProfile>,
+    #[serde(default)]
+    pub active_offline_profile_id: Option<String>,
+    #[serde(default)]
+    pub confirm_before_launch: bool,
+    #[serde(default = "default_resolution_width")]
+    pub resolution_width: u32,
+    #[serde(default = "default_resolution_height")]
+    pub resolution_height: u32,
+    #[serde(default)]
+    pub fullscreen: bool,
     pub ram_mb: u32,
     pub jvm_args: String,
     #[serde(default = "default_performance_profile")]
@@ -38,6 +54,12 @@ pub struct Settings {
     pub window_maximized: Option<bool>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct OfflineProfile {
+    pub id: String,
+    pub name: String,
+}
+
 fn default_minimize_on_launch() -> bool {
     true
 }
@@ -50,12 +72,18 @@ fn default_performance_profile() -> String {
     "balanced".to_string()
 }
 
+fn default_offline_profile_name() -> String {
+    "Aqua Player".to_string()
+}
+
+fn default_resolution_width() -> u32 { 854 }
+fn default_resolution_height() -> u32 { 480 }
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             language: default_language(),
-            username: "Player
-            ".into(),
+            username: "Player".into(),
             version: "1.21.11".into(),
             loader_type: "vanilla".into(),
             fabric_loader_version: None,
@@ -63,6 +91,14 @@ impl Default for Settings {
             java_runtime: None,
             mc_dir: None,
             instance_id: None,
+            offline_mode: false,
+            offline_profile_name: default_offline_profile_name(),
+            offline_profiles: vec![OfflineProfile { id: "default-offline".to_string(), name: default_offline_profile_name() }],
+            active_offline_profile_id: Some("default-offline".to_string()),
+            confirm_before_launch: false,
+            resolution_width: default_resolution_width(),
+            resolution_height: default_resolution_height(),
+            fullscreen: false,
             ram_mb: 2048,
             jvm_args: "-XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=16M -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -XX:+DisableExplicitGC".into(),
             performance_profile: default_performance_profile(),
@@ -204,7 +240,6 @@ pub fn default_mc_dir() -> Option<PathBuf> {
 }
 
 pub fn instance_dir(aqua_dir: &std::path::Path, profile_id: &str) -> PathBuf {
-    // Prefer KitStorage `aqua_blobs/profiles/<id>` layout, then `profiles/`, then legacy `instances/`.
     let kit_profiles = aqua_dir
         .join("aqua_blobs")
         .join("profiles")
@@ -212,7 +247,15 @@ pub fn instance_dir(aqua_dir: &std::path::Path, profile_id: &str) -> PathBuf {
     let profiles = aqua_dir.join("profiles").join(profile_id);
     let legacy = aqua_dir.join("instances").join(profile_id);
 
-    if kit_profiles.exists() {
+    // Metadata is authoritative. An empty directory in the preferred layout
+    // must not shadow a valid profile stored in a compatibility layout.
+    if kit_profiles.join("instance.json").is_file() {
+        kit_profiles
+    } else if profiles.join("instance.json").is_file() {
+        profiles
+    } else if legacy.join("instance.json").is_file() {
+        legacy
+    } else if kit_profiles.exists() {
         kit_profiles
     } else if profiles.exists() {
         profiles
@@ -385,13 +428,77 @@ pub fn read_logs() -> Result<String, String> {
         }
     }
     paths.sort();
+    const MAX_FILE_BYTES: usize = 512 * 1024;
+    const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
     let mut output = String::new();
     for path in paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            output.push_str(&content);
+        if output.len() >= MAX_TOTAL_BYTES {
+            break;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            let start = bytes.len().saturating_sub(MAX_FILE_BYTES);
+            let content = String::from_utf8_lossy(&bytes[start..]);
+            let remaining = MAX_TOTAL_BYTES - output.len();
+            output.extend(content.chars().take(remaining));
         }
     }
     Ok(output)
+}
+
+fn open_path(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn all_log_paths() -> Vec<PathBuf> {
+    [launcher_logs_dir(), game_logs_dir()]
+        .into_iter()
+        .flatten()
+        .flat_map(|dir| {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn open_latest_log() -> Result<(), String> {
+    let path = all_log_paths()
+        .into_iter()
+        .max_by_key(|path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok())
+        .ok_or_else(|| "No log file is available yet.".to_string())?;
+    open_path(&path)
+}
+
+#[tauri::command]
+pub fn open_logs_folder() -> Result<(), String> {
+    let path = launcher_logs_dir().ok_or_else(|| "Could not determine the logs directory.".to_string())?;
+    open_path(&path)
 }
 
 fn read_total_memory_mb() -> u64 {
@@ -507,12 +614,48 @@ pub fn generate_optimal_args() -> JvmSuggestion {
     gen_args_from_specs()
 }
 
+fn merge_settings_with_defaults(raw: Settings) -> Settings {
+    let mut merged = Settings::default();
+    merged.language = if raw.language.trim().is_empty() { merged.language } else { raw.language };
+    merged.username = if raw.username.trim().is_empty() { merged.username } else { raw.username };
+    merged.version = if raw.version.trim().is_empty() { merged.version } else { raw.version };
+    merged.loader_type = if raw.loader_type.trim().is_empty() { merged.loader_type } else { raw.loader_type };
+    merged.fabric_loader_version = raw.fabric_loader_version;
+    merged.java_path = raw.java_path;
+    merged.java_runtime = raw.java_runtime;
+    merged.mc_dir = raw.mc_dir;
+    merged.instance_id = raw.instance_id;
+    merged.offline_mode = raw.offline_mode;
+    merged.offline_profile_name = if raw.offline_profile_name.trim().is_empty() {
+        merged.offline_profile_name
+    } else {
+        raw.offline_profile_name
+    };
+    merged.offline_profiles = raw.offline_profiles;
+    merged.active_offline_profile_id = raw.active_offline_profile_id;
+    merged.confirm_before_launch = raw.confirm_before_launch;
+    merged.resolution_width = if raw.resolution_width == 0 { merged.resolution_width } else { raw.resolution_width };
+    merged.resolution_height = if raw.resolution_height == 0 { merged.resolution_height } else { raw.resolution_height };
+    merged.fullscreen = raw.fullscreen;
+    merged.ram_mb = if raw.ram_mb == 0 { merged.ram_mb } else { raw.ram_mb };
+    merged.jvm_args = if raw.jvm_args.trim().is_empty() { merged.jvm_args } else { raw.jvm_args };
+    merged.performance_profile = if raw.performance_profile.trim().is_empty() { merged.performance_profile } else { raw.performance_profile };
+    merged.show_snapshots = raw.show_snapshots;
+    merged.minimize_on_launch = raw.minimize_on_launch;
+    merged.window_x = raw.window_x.or(merged.window_x);
+    merged.window_y = raw.window_y.or(merged.window_y);
+    merged.window_width = raw.window_width.or(merged.window_width);
+    merged.window_height = raw.window_height.or(merged.window_height);
+    merged.window_maximized = raw.window_maximized.or(merged.window_maximized);
+    merged
+}
+
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> Settings {
     let path = settings_path(&app);
     if let Ok(data) = std::fs::read_to_string(&path) {
         if let Ok(s) = serde_json::from_str::<Settings>(&data) {
-            return s;
+            return merge_settings_with_defaults(s);
         }
     }
     Settings::default()
@@ -521,7 +664,8 @@ pub fn get_settings(app: AppHandle) -> Settings {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     let path = settings_path(&app);
-    let data = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    let normalized = merge_settings_with_defaults(settings);
+    let data = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
     atomic_write(&path, data.as_bytes())
 }
 
@@ -567,4 +711,38 @@ pub fn app_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_normalization_preserves_supported_values_after_round_trip() {
+        let settings = Settings {
+            offline_mode: true,
+            offline_profile_name: "Builder".to_string(),
+            offline_profiles: vec![OfflineProfile { id: "builder".to_string(), name: "Builder".to_string() }],
+            active_offline_profile_id: Some("builder".to_string()),
+            confirm_before_launch: true,
+            resolution_width: 1920,
+            resolution_height: 1080,
+            fullscreen: true,
+            window_maximized: Some(true),
+            ..Settings::default()
+        };
+
+        let encoded = serde_json::to_string(&merge_settings_with_defaults(settings.clone())).unwrap();
+        let restored = merge_settings_with_defaults(serde_json::from_str(&encoded).unwrap());
+
+        assert_eq!(restored.offline_mode, settings.offline_mode);
+        assert_eq!(restored.offline_profile_name, settings.offline_profile_name);
+        assert_eq!(restored.offline_profiles, settings.offline_profiles);
+        assert_eq!(restored.active_offline_profile_id, settings.active_offline_profile_id);
+        assert_eq!(restored.confirm_before_launch, settings.confirm_before_launch);
+        assert_eq!(restored.resolution_width, settings.resolution_width);
+        assert_eq!(restored.resolution_height, settings.resolution_height);
+        assert_eq!(restored.fullscreen, settings.fullscreen);
+        assert_eq!(restored.window_maximized, settings.window_maximized);
+    }
 }

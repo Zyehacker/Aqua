@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aqua Customize — Player Preview + Skin Editor (Test Harness)</title>
+<!--
+  Single-file test harness for the Aqua Client Customize page.
+  Stack: React 19 + React Three Fiber 9 + three.js, loaded via esm.sh importmap.
+  No build step, no TSX split. Open directly in a browser (needs internet for first load).
+-->
+<style>
+  :root{
+    --bg:#0e1116; --panel:#171c24; --panel2:#1d2430; --border:#2a3342; --border2:#39455a;
+    --text:#e7ecf3; --muted:#9aa7bb; --accent:#4c8dff; --accent2:#7aa7ff; --danger:#ff5c5c; --ok:#41c77c;
+    --radius:12px; --shadow:0 10px 30px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body,#root{height:100%;margin:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+  .app{display:flex;flex-direction:column;height:100%}
+  /* ---- top bar ---- */
+  .topbar{display:flex;align-items:center;gap:14px;padding:10px 16px;background:linear-gradient(180deg,#151b24,#10151c);border-bottom:1px solid var(--border);flex:0 0 auto}
+  .logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#6a5bff);display:grid;place-items:center;font-weight:800;font-size:14px;color:#fff;box-shadow:var(--shadow)}
+  .topbar h1{font-size:15px;font-weight:700;margin:0;letter-spacing:.2px}
+  .topbar .sub{font-size:11px;color:var(--muted);margin-left:2px}
+  .spacer{flex:1}
+  .acct{display:flex;gap:6px}
+  .acct button{background:var(--panel2);border:1px solid var(--border);color:var(--text);font-size:12px;padding:6px 10px;border-radius:8px;cursor:pointer;transition:.15s}
+  .acct button.active{background:var(--accent);border-color:var(--accent);color:#fff}
+  .done{padding:7px 14px;border:none;border-radius:8px;background:var(--accent);color:#fff;font-size:13px;font-weight:600;cursor:pointer}
+  .done:hover{background:var(--accent2)}
+  /* ---- body ---- */
+  .body{display:flex;flex:1;min-height:0}
+  .stage{flex:1;position:relative;min-width:0}
+  .stage canvas{display:block;width:100%;height:100%;touch-action:none}
+  .hint{position:absolute;left:14px;bottom:12px;font-size:11px;color:var(--muted);opacity:.85;pointer-events:none;background:rgba(14,17,22,.5);padding:4px 8px;border-radius:6px}
+  .stagebadge{position:absolute;right:14px;top:12px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);background:rgba(14,17,22,.5);padding:4px 9px;border-radius:6px}
+  /* ---- side panel ---- */
+  .panel{width:330px;flex:0 0 auto;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+  .section{padding:14px 16px;border-bottom:1px solid var(--border)}
+  .section h2{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+  .row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  .row label{font-size:12px;color:var(--text);flex:1}
+  .row .hint{font-size:11px;color:var(--muted)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 12px;border-radius:9px;border:1px solid var(--border2);background:var(--panel2);color:var(--text);font-size:12.5px;cursor:pointer;transition:.14s}
+  .btn:hover{background:#243042;border-color:#4a5a74}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.primary:hover{background:var(--accent2)}
+  .btn.tiny{padding:4px 8px;font-size:11px}
+  .btn.wide{width:100%;margin-top:4px}
+  .btn.on{background:var(--ok);border-color:var(--ok);color:#07170e;font-weight:600}
+  .seg{display:flex;border:1px solid var(--border2);border-radius:9px;overflow:hidden}
+  .seg button{flex:1;padding:7px 0;background:var(--panel2);border:none;color:var(--muted);font-size:12px;cursor:pointer}
+  .seg button.active{background:var(--accent);color:#fff}
+  .curve{height:5px;border-radius:3px;background:#0b0f15;overflow:hidden}
+  .curve>div{height:100%;background:linear-gradient(90deg,var(--accent),#9d6bff);width:0%;transition:width .2s}
+  .muted{color:var(--muted);font-size:12px}
+  .status{font-size:12px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--panel2);border:1px solid var(--border)}
+  .capethumb{width:34px;height:44px;border:1px solid var(--border2);border-radius:6px;background:#0b0f15;object-fit:cover}
+  .swatches{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+  .swatch{width:22px;height:22px;border-radius:6px;border:1px solid var(--border2);cursor:pointer;transition:.12s}
+  .swatch.sel{box-shadow:0 0 0 2px var(--accent)}
+  /* ---- editor overlay ---- */
+  .overlay{position:fixed;inset:0;background:rgba(6,8,12,.6);display:grid;place-items:center;z-index:50}
+  .editor{width:min(860px,94vw);max-height:92vh;background:var(--panel);border:1px solid var(--border2);border-radius:var(--radius);box-shadow:var(--shadow);display:grid;grid-template-columns:1fr 220px;overflow:hidden}
+  .editor-stage{background:#0b0f15;padding:18px;display:grid;place-items:center;min-width:0}
+  .editor canvas{image-rendering:pixelated;width:100%;max-width:512px;aspect-ratio:1;border:1px solid var(--border);border-radius:8px;cursor:crosshair;touch-action:none;background:repeating-conic-gradient(#000 0% 25%, #0e131b 0% 50%) 50%/16px 16px}
+  .editor-side{padding:16px;border-left:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
+  .editor-side h3{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:2px 0 8px}
+  .toolseg{display:flex;gap:4px}
+  .toolseg button{flex:1;padding:7px 0;border:1px solid var(--border2);background:var(--panel2);color:var(--muted);font-size:11px;border-radius:7px;cursor:pointer}
+  .toolseg button.active{background:var(--accent);color:#fff}
+  input[type=color]{width:100%;height:34px;border:1px solid var(--border2);border-radius:8px;background:#0b0f15;padding:2px;cursor:pointer}
+  .editor-side .btn-row{display:flex;gap:6px}
+  .editor-side .btn-row .btn{flex:1}
+  .footer{margin-top:auto;padding-top:6px;display:flex;gap:6px}
+  .footer .btn{flex:1}
+  .check{display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;user-select:none}
+  .check input{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+  @media (max-width:720px){ .panel{width:280px} .editor{grid-template-columns:1fr;grid-template-rows:1fr auto;max-height:94vh} .editor-side{border-left:none;border-top:1px solid var(--border)} .stagebadge,.hint{display:none} }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@19.2.8",
+    "react-dom": "https://esm.sh/react-dom@19.2.8",
+    "react-dom/client": "https://esm.sh/react-dom@19.2.8/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "@react-three/fiber": "https://esm.sh/@react-three/fiber@9.7.0"
+  }
+}
+</script>
+
+<script type="module">
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { createRoot } from 'react-dom/client';
+import * as THREE from 'three';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+
+/* ============================================================
+   Shared global: lets the React UI request a re-render of the
+   R3F canvas (frameloop="demand") when the skin changes.
+   ============================================================ */
+const bus = { invalidate: null };
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/* ============================================================
+   1. Minecraft skin geometry (64x64 UV layout)
+   Builds a BoxGeometry with per-face UV rects from the skin.
+   ============================================================ */
+const R = (x1, y1, x2, y2) => [x1, y1, x2, y2];
+
+const RECT = {
+  head:  { top:R(8,0,16,8),  bottom:R(16,0,24,8), right:R(0,8,8,16),  front:R(8,8,16,16),  left:R(16,8,24,16), back:R(24,8,32,16) },
+  hat:   { top:R(40,0,48,8), bottom:R(48,0,56,8), right:R(32,8,40,16), front:R(40,8,48,16), left:R(48,8,56,16), back:R(56,8,64,16) },
+  body:  { top:R(20,16,28,20), bottom:R(28,16,36,20), right:R(16,20,20,32), front:R(20,20,28,32), left:R(28,20,32,32), back:R(32,20,40,32) },
+  armR:  { top:R(44,16,48,20), bottom:R(48,16,52,20), right:R(40,20,44,32), front:R(44,20,48,32), left:R(48,20,52,32), back:R(52,20,56,32) },
+  armL:  { top:R(36,48,40,52), bottom:R(40,48,44,52), right:R(32,52,36,64), front:R(36,52,40,64), left:R(40,52,44,64), back:R(44,52,48,64) },
+  legR:  { top:R(4,16,8,20),   bottom:R(8,16,12,20),  right:R(0,20,4,32),  front:R(4,20,8,32),  left:R(8,20,12,32), back:R(12,20,16,32) },
+  legL:  { top:R(20,48,24,52), bottom:R(24,48,28,52), right:R(16,52,20,64), front:R(20,52,24,64), left:R(24,52,28,64), back:R(28,52,32,64) },
+};
+
+// Build one textured box. s=[sx,sy,sz] dims, c=[cx,cy,cz] center, rects={face:[\x1,y1,x2,y2]}.
+function makeBox(rects, s, c) {
+  const [sx, sy, sz] = s, [cx, cy, cz] = c;
+  const hx = sx / 2, hy = sy / 2, hz = sz / 2;
+  const px = r => { const u0 = r[0]/64, u1 = r[2]/64, v0 = r[1]/64, v1 = r[3]/64; return {u0,u1,v0,v1}; };
+  // Each face: 4 corners, each [x,y,z,u,v]. Corner order chosen so texture reads upright.
+  const faces = [];
+  const F = (rect, face) => {
+    const o = px(rect);
+    switch (face) {
+      case 'right':  return [[cx+hx,cy-hy,cz+hz,o.u1,o.v1],[cx+hx,cy+hy,cz+hz,o.u1,o.v0],[cx+hx,cy+hy,cz-hz,o.u0,o.v0],[cx+hx,cy-hy,cz-hz,o.u0,o.v1]];
+      case 'left':   return [[cx-hx,cy-hy,cz-hz,o.u0,o.v1],[cx-hx,cy+hy,cz-hz,o.u0,o.v0],[cx-hx,cy+hy,cz+hz,o.u1,o.v0],[cx-hx,cy-hy,cz+hz,o.u1,o.v1]];
+      case 'top':    return [[cx-hx,cy+hy,cz+hz,o.u0,o.v1],[cx+hx,cy+hy,cz+hz,o.u1,o.v1],[cx+hx,cy+hy,cz-hz,o.u1,o.v0],[cx-hx,cy+hy,cz-hz,o.u0,o.v0]];
+      case 'bottom': return [[cx-hx,cy-hy,cz-hz,o.u0,o.v0],[cx+hx,cy-hy,cz-hz,o.u1,o.v0],[cx+hx,cy-hy,cz+hz,o.u1,o.v1],[cx-hx,cy-hy,cz+hz,o.u0,o.v1]];
+      case 'front':  return [[cx-hx,cy+hy,cz+hz,o.u0,o.v0],[cx+hx,cy+hy,cz+hz,o.u1,o.v0],[cx+hx,cy-hy,cz+hz,o.u1,o.v1],[cx-hx,cy-hy,cz+hz,o.u0,o.v1]];
+      default:       return [[cx+hx,cy+hy,cz-hz,o.u1,o.v0],[cx-hx,cy+hy,cz-hz,o.u0,o.v0],[cx-hx,cy-hy,cz-hz,o.u0,o.v1],[cx+hx,cy-hy,cz-hz,o.u1,o.v1]];
+    }
+  };
+  for (const face of ['right','left','top','bottom','front','back']) {
+    faces.push({ corner: F(rects[face], face), normal: (
+      face==='right'?[1,0,0]:face==='left'?[-1,0,0]:face==='top'?[0,1,0]:
+      face==='bottom'?[0,-1,0]:face==='front'?[0,0,1]:[0,0,-1]
+    )});
+  }
+  const pos=[], nor=[], uv=[], idx=[];
+  for (const f of faces) {
+    const base = pos.length / 3;
+    for (const v of f.corner) { pos.push(v[0],v[1],v[2]); uv.push(v[3],v[4]); }
+    for (let i=0;i<4;i++) nor.push(f.normal[0],f.normal[1],f.normal[2]);
+    // auto-correct winding so normals are outward
+    const a=f.corner[0], b=f.corner[1], c0=f.corner[2];
+    const ax=b[0]-a[0], ay=b[1]-a[1], az=b[2]-a[2];
+    const bx=c0[0]-a[0], by=c0[1]-a[1], bz=c0[2]-a[2];
+    const cx=ay*bz-az*by, cy=az*bx-ax*bz, cz=ax*by-ay*bx;
+    const dot=cx*f.normal[0]+cy*f.normal[1]+cz*f.normal[2];
+    if (dot>=0) idx.push(base,base+1,base+2, base,base+2,base+3);
+    else        idx.push(base,base+2,base+1, base,base+1,base+3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
+  g.setAttribute('uv',       new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx);
+  g.computeBoundingSphere();
+  return g;
+}
+
+// Body geometry set for a given model (steve/alex differ in arm width).
+function buildBody(model) {
+  const armW = model === 'alex' ? 3 : 4;
+  const armR = 4 + armW/2;      // arm center x
+  const armL = -(4 + armW/2);
+  return {
+    head:  makeBox(RECT.head,  [8,8,8],    [0,0,0]),
+    hat:   makeBox(RECT.hat,   [8.4,8.4,8.4],[0,0,0]),
+    body:  makeBox(RECT.body,  [8,12,4],   [0,0,0]),
+    armR:  makeBox(RECT.armR,  [armW,12,4],[armR,-6,0]),
+    armL:  makeBox(RECT.armL,  [armW,12,4],[armL,-6,0]),
+    legR:  makeBox(RECT.legR,  [4,12,4],   [2,-6,0]),
+    legL:  makeBox(RECT.legL,  [4,12,4],   [-2,-6,0]),
+    armRx: armR, armLx: armL,
+  };
+}
+
+/* ============================================================
+   2. Default textures (drawn procedurally so nothing is external)
+   ============================================================ */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas'); c.width=w; c.height=h;
+  return { c, ctx: c.getContext('2d') };
+}
+
+function drawDefaultSkin(ctx) {
+  const f=(x1,y1,x2,y2,c)=>{ctx.fillStyle=c;ctx.fillRect(x1,y1,x2-x1,y2-y1);};
+  const skin='#C68B5C', hair='#5A3A24', shirt='#3E6BB6', shirtD='#33598F',
+        pant='#4B5C68', pantD='#3C4B55', boot='#33343B';
+  // base
+  f(0,0,64,64,skin);
+  // head front (x8..16, y8..16)
+  f(8,8,16,16,skin);
+  f(8,8,16,11,hair);            // hair top of face
+  f(8,11,9,14,hair); f(15,11,16,14,hair); // side fringes
+  f(10,11,11,13,'#fff'); f(13,11,14,13,'#fff'); // eyes white
+  f(10,12,12,14,'#3B2B1E'); f(13,12,15,14,'#3B2B1E'); // pupils
+  f(8,13,9,16,skin); f(15,13,16,16,skin); // cheeks
+  // head top + back + sides: hair
+  f(8,0,16,8,hair); f(24,8,32,16,hair); f(0,8,8,10,hair); f(16,8,24,10,hair);
+  f(0,12,8,13,hair); f(16,12,24,13,hair);
+  // hat overlay region: fill opaque hair so toggling hat shows hair
+  f(40,0,48,8,hair); f(48,0,56,8,hair); f(32,8,40,16,hair); f(40,8,48,16,hair);
+  f(48,8,56,16,hair); f(56,8,64,16,hair);
+  f(40,8,48,9,skin); // open the hat's face row so face shows where hat is transparent fallback
+  // body: shirt
+  f(20,16,28,20,shirt); f(28,16,36,20,shirtD);
+  f(20,20,28,32,shirt); f(28,20,32,32,shirt); f(16,20,20,32,shirtD);
+  f(32,20,40,32,shirtD);
+  f(20,20,28,32,'rgba(0,0,0,0)'); // will re-fill below the collar instead
+  f(20,22,28,24,shirt); // keep chest
+  f(20,20,28,21,skin);  // neck sliver
+  // arms: sleeves upper, skin hand
+  f(44,20,48,26,shirt); f(52,20,56,28,shirtD); f(40,20,44,28,shirtD); f(48,20,52,26,shirt);
+  f(44,26,48,32,skin);  f(48,26,52,32,skin);
+  f(36,52,40,58,shirt); f(44,52,48,60,shirtD); f(32,52,36,60,shirtD); f(40,52,44,58,shirt);
+  f(36,58,40,64,skin);  f(40,58,44,64,skin);
+  // legs: pants + boots
+  f(4,20,8,28,pant); f(12,20,16,28,pantD); f(0,20,4,30,pantD); f(8,20,12,30,pant);
+  f(4,28,8,32,boot); f(8,28,12,32,boot);
+  f(20,52,24,60,pant); f(28,52,32,60,pantD); f(16,52,20,62,pantD); f(24,52,28,62,pant);
+  f(20,60,24,64,boot); f(24,60,28,64,boot);
+}
+
+function drawDefaultCape(ctx) {
+  ctx.clearRect(0,0,64,64);
+  const grad = ctx.createLinearGradient(0,0,0,64);
+  grad.addColorStop(0,'#2E3B6E'); grad.addColorStop(1,'#1B2346');
+  ctx.fillStyle=grad; ctx.fillRect(0,0,64,64);
+  ctx.fillStyle='#56659f'; ctx.fillRect(20,0,24,64);
+  ctx.fillStyle='#7d8bc0'; ctx.fillRect(24,0,16,64);
+  ctx.fillStyle='#9aa9d8'; ctx.fillRect(28,0,8,64);
+  ctx.fillStyle='#22263d'; ctx.fillRect(0,58,64,6);
+}
+
+/* ============================================================
+   3. 3D Player scene
+   ============================================================ */
+
+function Limb({ geom, mat, ref, joint }) {
+  return React.createElement('group',{ ref, position:joint },
+    React.createElement('mesh',{ geometry:geom },
+      React.createElement('primitive',{ object:mat, attach:'material' })));
+}
+
+function Player({ skinTex, capeTex, model, animate, showHat, capeOn }) {
+  const armR = useRef(); const armL = useRef();
+  const legR = useRef(); const legL = useRef();
+  const cape = useRef();
+  const geom = useMemo(() => buildBody(model), [model]);
+  const mat = useMemo(() => new THREE.MeshStandardMaterial({ map:skinTex, transparent:true, roughness:0.9, metalness:0.0 }), [skinTex]);
+  const capeMat = useMemo(() => new THREE.MeshStandardMaterial({ map:capeTex, side:THREE.DoubleSide, transparent:true }), [capeTex]);
+
+  useFrame((state) => {
+    if (!animate) return;
+    const t = state.clock.elapsedTime;
+    const sw = Math.sin(t*1.6)*0.22;
+    if (armR.current) armR.current.rotation.x = sw*0.5 - 0.06;
+    if (armL.current) armL.current.rotation.x = -sw*0.5 - 0.06;
+    if (legR.current) legR.current.rotation.x = -sw*0.5;
+    if (legL.current) legL.current.rotation.x = sw*0.5;
+    if (cape.current) cape.current.rotation.z = Math.sin(t*2.2)*0.06;
+  });
+
+  // hat geometry: a thin shell slightly larger than the head
+  const hatMesh = showHat && React.createElement('mesh',{ geometry:geom.hat },
+    React.createElement('primitive',{ object:mat, attach:'material' }));
+
+  const capeMesh = capeOn && React.createElement('mesh',{ ref:cape, position:[0,8.4,-2.02] },
+    React.createElement('planeGeometry',{ args:[8,11] }),
+    React.createElement('primitive',{ object:capeMat, attach:'material' }));
+
+  return React.createElement('group',{ scale:[1/16,1/16,1/16] },
+    // floor plate
+    React.createElement('mesh',{ rotation:[-Math.PI/2,0,0], position:[0,0.003,0] },
+      React.createElement('circleGeometry',{ args:[1.5,48] }),
+      React.createElement('meshBasicMaterial',{ color:'#0f141c' })),
+    // body
+    React.createElement('mesh',{ geometry:geom.body, position:[0,6,0] },
+      React.createElement('primitive',{ object:mat, attach:'material' })),
+    // head (+hat)
+    React.createElement('group',{ position:[0,16,0] },
+      React.createElement('mesh',{ geometry:geom.head },
+        React.createElement('primitive',{ object:mat, attach:'material' })),
+      hatMesh),
+    // limbs (group sits at the shoulder/hip joint; geometry is offset downward)
+    React.createElement(Limb,{ geom:geom.armR, mat, ref:armR, joint:[geom.armRx,12,0] }),
+    React.createElement(Limb,{ geom:geom.armL, mat, ref:armL, joint:[geom.armLx,12,0] }),
+    React.createElement(Limb,{ geom:geom.legR, mat, ref:legR, joint:[2,12,0] }),
+    React.createElement(Limb,{ geom:geom.legL, mat, ref:legL, joint:[-2,12,0] }),
+    capeMesh
+  );
+}
+
+/* Simple orbit controls (drag rotate, wheel zoom) — demand rendering. */
+function Orbit() {
+  const { camera, gl, invalidate } = useThree();
+  const target = useMemo(() => new THREE.Vector3(0, 0.55, 0), []);
+  useEffect(() => {
+    const dom = gl.domElement;
+    const sph = new THREE.Spherical().setFromVector3(camera.position.clone().sub(target));
+    sph.phi = clamp(sph.phi, 0.15, Math.PI-0.15);
+    let down = false, px=0, py=0;
+    const update = () => {
+      camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(sph));
+      camera.lookAt(target);
+    };
+    const onDown = e => { down=true; px=e.clientX; py=e.clientY; dom.setPointerCapture(e.pointerId); };
+    const onMove = e => { if(!down) return; const dx=e.clientX-px, dy=e.clientY-py; px=e.clientX; py=e.clientY;
+      sph.theta -= dx*0.008; sph.phi -= dy*0.008; sph.phi=clamp(sph.phi,0.15,Math.PI-0.15); update(); invalidate(); };
+    const onUp = () => { down=false; };
+    const onWheel = e => { e.preventDefault(); sph.radius *= (1 + e.deltaY*0.0012); sph.radius=clamp(sph.radius,1.4,5); update(); invalidate(); };
+    dom.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    dom.addEventListener('wheel', onWheel, { passive:false });
+    update();
+    return () => { dom.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      dom.removeEventListener('wheel', onWheel); };
+  }, [camera, gl, invalidate, target]);
+  // expose invalidate to the React UI for demand-mode redraws
+  useEffect(() => { bus.invalidate = invalidate; return () => { bus.invalidate = null; }; }, [invalidate]);
+  return null;
+}
+
+function Scene({ skinTex, capeTex, model, animate, showHat, capeOn }) {
+  return React.createElement(React.Fragment, null,
+    React.createElement('ambientLight',{ intensity:0.65 }),
+    React.createElement('directionalLight',{ position:[3,5,4], intensity:1.1 }),
+    React.createElement('directionalLight',{ position:[-3,2,-3], intensity:0.35 }),
+    React.createElement(Player,{ skinTex, capeTex, model, animate, showHat, capeOn }),
+    React.createElement(Orbit, null));
+}
+
+/* ============================================================
+   4. The App
+   ============================================================ */
+const ACC_KEY = 'aqua-customize-v1';
+const SWATCHES = ['#C68B5C','#7A5A3A','#F2E6D9','#000000','#FFFFFF','#4B3A2A','#3E6BB6','#8C2F2F','#4C7A28','#7A4A8C','#54626A','#D9A93A'];
+
+function App() {
+  // ---- persistent state refs (created once) ----
+  const { current: sourceCanvas } = useRef(makeCanvas(64,64));
+  const { current: capeCanvas }  = useRef(makeCanvas(64,64));
+  const skinTex   = useMemo(() => { const t = new THREE.CanvasTexture(sourceCanvas.c); t.magFilter=THREE.NearestFilter; t.minFilter=THREE.NearestFilter; t.needsUpdate=true; return t; }, []);
+  const capeTex   = useMemo(() => { const t = new THREE.CanvasTexture(capeCanvas.c); t.needsUpdate=true; t.encoding=THREE.sRGBEncoding; return t; }, []);
+
+  const accounts = useRef(null);
+  if (!accounts.current) {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(ACC_KEY) || 'null'); } catch(e) {}
+    accounts.current = saved || {
+      A: { skin:null, cape:false },
+      B: { skin:null, cape:false },
+    };
+  }
+  const persist = () => { try { localStorage.setItem(ACC_KEY, JSON.stringify(accounts.current)); } catch(e){} };
+
+  // ---- React state ----
+  const [account, setAccount] = useState('A');
+  const [model, setModel] = useState('steve');
+  const [animate, setAnimate] = useState(false);
+  const [showHat, setShowHat] = useState(true);
+  const [capeOn, setCapeOn] = useState(accounts.current.A.cape);
+  // editor state
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [tool, setTool] = useState('brush');
+  const [color, setColor] = useState('#3E6BB6');
+  const [tick, setTick] = useState(0);      // forces editor canvas redraw
+  const [uiVersion, setUiVersion] = useState(0); // forces UI refresh (eyedropper etc.)
+  const undoStack = useRef([]);
+  const redoStack = useRef([]);
+  const editorRef = useRef(null);
+  const paintRef = useRef(null); // {drawing:bool}
+
+  const markDirty = useCallback(() => {
+    skinTex.needsUpdate = true;
+    if (bus.invalidate) bus.invalidate();
+    setTick(t => t + 1);
+  }, [skinTex]);
+  const markDirtyUi = useCallback(() => { setUiVersion(v=>v+1); }, []);
+
+  // ---- account load/save ----
+  const saveCurrentSkin = useCallback(() => {
+    accounts.current[account].skin = sourceCanvas.c.toDataURL('image/png');
+    accounts.current[account].cape = capeOn;
+    persist();
+  }, [account, capeOn]);
+
+  const drawIntoSource = useCallback((dataURL) => {
+    if (!dataURL) { drawDefaultSkin(sourceCanvas.ctx); }
+    else {
+      const img = new Image();
+      img.onload = () => { sourceCanvas.ctx.imageSmoothingEnabled=false; sourceCanvas.ctx.drawImage(img,0,0,64,64); markDirty(); };
+      img.src = dataURL;
+    }
+    sourceCanvas.ctx.imageSmoothingEnabled = false;
+    if (!dataURL) markDirty();
+  }, [markDirty]);
+
+  const loadAccount = useCallback((name) => {
+    saveCurrentSkin();
+    setAccount(name);
+    setCapeOn(!!accounts.current[name].cape);
+    drawIntoSource(accounts.current[name].skin || null);
+  }, [saveCurrentSkin, drawIntoSource]);
+
+  // ---- initial draw ----
+  useEffect(() => {
+    drawDefaultSkin(sourceCanvas.ctx);
+    drawDefaultCape(capeCanvas.ctx);
+    const a = accounts.current[account];
+    if (a && a.skin) drawIntoSource(a.skin);
+    setCapeOn(accounts.current[account] ? !!accounts.current[account].cape : false);
+    skinTex.needsUpdate = true;
+    capeTex.needsUpdate = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- save button ----
+  const onSave = () => {
+    saveCurrentSkin();
+    // cosmetic state is stored per-account; the launcher reads the same store when launching any instance.
+  };
+
+  const resetHistory = () => { undoStack.current = []; redoStack.current = []; };
+
+  // ---- upload / import skin ----
+  const fileRef = useRef(null);
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => { sourceCanvas.ctx.imageSmoothingEnabled=false; sourceCanvas.ctx.clearRect(0,0,64,64); sourceCanvas.ctx.drawImage(img,0,0,64,64); URL.revokeObjectURL(url); resetHistory(); markDirty(); };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+    e.target.value = '';
+  };
+
+  // ---- export ----
+  const onExport = () => {
+    const a = document.createElement('a');
+    a.download = `aqua-skin-${account}.png`;
+    a.href = sourceCanvas.c.toDataURL('image/png');
+    a.click();
+  };
+
+  // ---- editor drawing ----
+  const pixelFromEvent = (e) => {
+    const cv = editorRef.current;
+    if (!cv) return null;
+    const r = cv.getBoundingClientRect();
+    const scale = cv.width / r.width;           // backing pixels per css px
+    const x = Math.floor((e.clientX - r.left) * scale / 8);
+    const y = Math.floor((e.clientY - r.top) * scale / 8);
+    if (x<0||y<0||x>=64||y>=64) return null;
+    return [x,y];
+  };
+  const redrawEditor = useCallback(() => {
+    const cv = editorRef.current; if (!cv) return;
+    const c2 = cv.getContext('2d');
+    c2.imageSmoothingEnabled = false;
+    c2.clearRect(0,0,cv.width,cv.height);
+    c2.drawImage(sourceCanvas.c, 0,0, cv.width, cv.height);
+    c2.strokeStyle = 'rgba(255,255,255,0.06)'; c2.lineWidth = 1;
+    const step = cv.width/64;
+    for (let i=1;i<64;i++){ c2.beginPath(); c2.moveTo(i*step,0); c2.lineTo(i*step,cv.height); c2.stroke(); c2.beginPath(); c2.moveTo(0,i*step); c2.lineTo(cv.width,i*step); c2.stroke(); }
+  }, []);
+  useEffect(() => { redrawEditor(); }, [tick, uiVersion, editorOpen, redrawEditor]);
+
+  const commitStroke = useCallback(() => {
+    undoStack.current.push(sourceCanvas.ctx.getImageData(0,0,64,64));
+    if (undoStack.current.length > 60) undoStack.current.shift();
+    redoStack.current = [];
+  }, []);
+  const paint = useCallback((x, y) => {
+    const ctx = sourceCanvas.ctx;
+    if (tool === 'brush')  { ctx.fillStyle = color; ctx.fillRect(x,y,1,1); markDirty(); }
+    else if (tool === 'eraser') { ctx.clearRect(x,y,1,1); markDirty(); }
+    else if (tool === 'eyedrop') {
+      const d = ctx.getImageData(x,y,1,1).data;
+      setColor('#' + [d[0],d[1],d[2]].map(v=>v.toString(16).padStart(2,'0')).join(''));
+      markDirtyUi();
+    }
+  }, [tool, color, markDirty, markDirtyUi]);
+
+  const onPointerDown = (e) => {
+    e.preventDefault();
+    const p = pixelFromEvent(e);
+    if (!p) return;
+    if (tool !== 'eyedrop') commitStroke();
+    paint(p[0], p[1]);
+    paintRef.current = { drawing: true };
+    editorRef.current && editorRef.current.setPointerCapture(e.pointerId);
+  };
+  const onPointerMove = (e) => {
+    if (!paintRef.current || !paintRef.current.drawing) return;
+    const p = pixelFromEvent(e); if (!p) return;
+    paint(p[0], p[1]);
+  };
+  const onPointerUp = () => { paintRef.current = { drawing:false }; };
+
+  const onUndo = () => {
+    const snap = undoStack.current.pop(); if (!snap) return;
+    redoStack.current.push(sourceCanvas.ctx.getImageData(0,0,64,64));
+    sourceCanvas.ctx.putImageData(snap,0,0); markDirty();
+  };
+  const onRedo = () => {
+    const snap = redoStack.current.pop(); if (!snap) return;
+    undoStack.current.push(sourceCanvas.ctx.getImageData(0,0,64,64));
+    sourceCanvas.ctx.putImageData(snap,0,0); markDirty();
+  };
+  const onClear = () => { commitStroke(); sourceCanvas.ctx.clearRect(0,0,64,64); markDirty(); };
+
+  const editRef = useRef(null);
+  const onImport = () => { editRef.current && editRef.current.click(); };
+
+  // ---- update 3D on account/model/cape changes (ensure re-render) ----
+  useEffect(() => { skinTex.needsUpdate = true; if (bus.invalidate) bus.invalidate(); }, [skinTex]);
+
+  const editorOverlay = editorOpen && React.createElement('div',{ className:'overlay' },
+    React.createElement('div',{ className:'editor' },
+      React.createElement('div',{ className:'editor-stage' },
+        React.createElement('canvas',{ ref:editorRef, width:512, height:512,
+          onPointerDown, onPointerMove, onPointerUp })),
+      React.createElement('div',{ className:'editor-side' },
+        React.createElement('div', null,
+          React.createElement('h3', null, 'Tools'),
+          React.createElement('div',{ className:'toolseg' },
+            React.createElement('button',{ className:tool==='brush'?'active':null, onClick:()=>setTool('brush') },'Brush'),
+            React.createElement('button',{ className:tool==='eraser'?'active':null, onClick:()=>setTool('eraser') },'Eraser'),
+            React.createElement('button',{ className:tool==='eyedrop'?'active':null, onClick:()=>setTool('eyedrop') },'Pick'))),
+        React.createElement('div', null,
+          React.createElement('h3', null, 'Color'),
+          React.createElement('input',{ type:'color', value:color,
+            onChange:ev=>{ setColor(ev.target.value); if(tool==='eyedrop') setTool('brush'); } } ),
+          React.createElement('div',{ className:'swatches' },
+            SWATCHES.map(c => React.createElement('button',{ key:c, className:'swatch'+ (color===c?' sel':''), style:{background:c}, onClick:()=>setColor(c) })))),
+        React.createElement('div', null,
+          React.createElement('h3', null, 'Edit'),
+          React.createElement('div',{ className:'btn-row' },
+            React.createElement('button',{ className:'btn tiny', onClick:onUndo },'Undo'),
+            React.createElement('button',{ className:'btn tiny', onClick:onRedo },'Redo'),
+            React.createElement('button',{ className:'btn tiny', onClick:onClear },'Clear')),
+          React.createElement('div',{ className:'btn-row', style:{marginTop:6} },
+            React.createElement('button',{ className:'btn tiny', onClick:onImport },'Import'),
+            React.createElement('button',{ className:'btn tiny', onClick:onExport },'Export'))),
+        React.createElement('div',{ className:'footer' },
+          React.createElement('button',{ className:'btn', onClick:()=>setEditorOpen(false) },'Cancel'),
+          React.createElement('button',{ className:'btn primary', onClick:()=>{ markDirty(); setEditorOpen(false); } },'Apply')),
+        React.createElement('input',{ ref:editRef, type:'file', accept:'image/png,image/*', style:{display:'none'}, onChange:onFile }))));
+
+  return React.createElement('div',{ className:'app' },
+    React.createElement('div',{ className:'topbar' },
+      React.createElement('div',{ className:'logo' },'A'),
+      React.createElement('h1', null, 'Customize',
+        React.createElement('span',{ className:'sub' },' · skin & cape preview · single-file test harness')),
+      React.createElement('div',{ className:'spacer' }),
+      React.createElement('div',{ className:'acct' },
+        React.createElement('button',{ className:account==='A'?'active':null, onClick:()=>loadAccount('A') },'Account A'),
+        React.createElement('button',{ className:account==='B'?'active':null, onClick:()=>loadAccount('B') },'Account B')),
+      React.createElement('button',{ className:'done', onClick:onSave },'Save'))
+    ,
+    React.createElement('div',{ className:'body' },
+      React.createElement('div',{ className:'stage' },
+        React.createElement('div',{ className:'stagebadge' },'Live preview · R3F'),
+        React.createElement(Canvas,{ frameloop: animate ? 'always' : 'demand',
+            camera:{ position:[0,0.9,2.8], fov:45 }, dpr:[1,2] },
+          React.createElement(Scene,{ skinTex, capeTex, model, animate, showHat, capeOn })),
+        React.createElement('div',{ className:'hint' },'Drag to rotate · Scroll to zoom')),
+      React.createElement('div',{ className:'panel' },
+        React.createElement('div',{ className:'section' },
+          React.createElement('h2', null, 'Skin'),
+          React.createElement('div',{ className:'row' },
+            React.createElement('label', null,'Model'),
+            React.createElement('div',{ className:'seg' },
+              React.createElement('button',{ className:model==='steve'?'active':null, onClick:()=>setModel('steve') },'Steve'),
+              React.createElement('button',{ className:model==='alex'?'active':null, onClick:()=>setModel('alex') },'Alex'))),
+          React.createElement('label',{ className:'check' },
+            React.createElement('input',{ type:'checkbox', checked:showHat, onChange:ev=>setShowHat(ev.target.checked) }),
+            'Show outer layer (hat)'),
+          React.createElement('div',{ className:'btn-row' },
+            React.createElement('button',{ className:'btn wide', onClick:onImport },'⬆ Upload skin')),
+          React.createElement('div',{ className:'btn-row' },
+            React.createElement('button',{ className:'btn wide primary', onClick:()=>{ resetHistory(); setEditorOpen(true); } },'✏️ Edit skin')))
+        ,
+        React.createElement('div',{ className:'section' },
+          React.createElement('h2', null, 'Cape'),
+          React.createElement('div',{ className:'row' },
+            React.createElement('img',{ className:'capethumb', src:capeCanvas.c.toDataURL(), alt:'cape' }),
+            React.createElement('div',{ style:{flex:1} },
+              React.createElement('div',{ className:'row', style:{marginBottom:4} },
+                React.createElement('label', null,'Account cape'),
+                React.createElement('span',{ className:'hint' },'owned')),
+              React.createElement('div',{ className:'btn-row' },
+                React.createElement('button',{ className:'btn tiny' + (capeOn?' on':''), onClick:()=>setCapeOn(o=>!o) },
+                  capeOn ? 'Equipped' : 'Equip'))))
+          ,
+          React.createElement('div',{ className:'status' },
+            React.createElement('span',{ className:'muted' },
+              'Equip uses the account’s owned cape. Only owned capes are shown — no fabricated Mojang capes.')))
+        ,
+        React.createElement('div',{ className:'section' },
+          React.createElement('h2', null, 'Preview'),
+          React.createElement('label',{ className:'check' },
+            React.createElement('input',{ type:'checkbox', checked:animate, onChange:ev=>setAnimate(ev.target.checked) }),
+            'Idle animation'),
+          React.createElement('div',{ className:'muted', style:{marginTop:8, lineHeight:1.5} },
+            'Demand-mode rendering — the 3D view only redraws when you change something, so it uses no constant GPU when idle.'))
+        ,
+        React.createElement('div',{ className:'section' },
+          React.createElement('h2', null, 'Persistence'),
+          React.createElement('div',{ className:'muted', style:{lineHeight:1.5} },
+            'Account A and B keep completely separate skin + cape state (restored from localStorage on load). ',
+            'In the launcher this same per-account store is used when launching every Minecraft instance. ',
+            React.createElement('br',null),
+            'Click Save to store the current account’s cosmetics.')))
+      ),
+    editorOverlay
+  );
+}
+
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>

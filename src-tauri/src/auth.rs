@@ -29,16 +29,50 @@ pub struct MsaAccount {
     pub expires_at: u64,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct AccountSummary {
+    pub uuid: String,
+    pub username: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct AccountStore {
+    accounts: Vec<MsaAccount>,
+    active_uuid: Option<String>,
+}
+
 fn account_path(app: &AppHandle) -> PathBuf {
     let dir = app.path().app_config_dir().expect("config dir");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("account.json")
 }
 
+fn accounts_path(app: &AppHandle) -> PathBuf {
+    let dir = app.path().app_config_dir().expect("config dir");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("accounts.json")
+}
+
 fn save_account_file(app: &AppHandle, acc: &MsaAccount) -> Result<(), String> {
     let path = account_path(app);
     let data = serde_json::to_string_pretty(acc).map_err(|e| e.to_string())?;
     atomic_write(&path, data.as_bytes())
+}
+
+fn load_account_store(app: &AppHandle) -> AccountStore {
+    if let Ok(data) = std::fs::read_to_string(accounts_path(app)) {
+        if let Ok(store) = serde_json::from_str(&data) {
+            return store;
+        }
+    }
+    load_account_file(app)
+        .map(|account| AccountStore { active_uuid: Some(account.uuid.clone()), accounts: vec![account] })
+        .unwrap_or_default()
+}
+
+fn save_account_store(app: &AppHandle, store: &AccountStore) -> Result<(), String> {
+    let data = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
+    atomic_write(&accounts_path(app), data.as_bytes())
 }
 
 pub fn load_account_file(app: &AppHandle) -> Option<MsaAccount> {
@@ -345,6 +379,11 @@ pub async fn msa_login(app: AppHandle) -> Result<MsaAccount, String> {
 
     let client = reqwest::Client::new();
     let acc = full_auth_from_code(&client, &code).await?;
+    let mut store = load_account_store(&app);
+    store.accounts.retain(|account| account.uuid != acc.uuid);
+    store.accounts.push(acc.clone());
+    store.active_uuid = Some(acc.uuid.clone());
+    save_account_store(&app, &store)?;
     save_account_file(&app, &acc)?;
     let _ = app.emit("auth-changed", &acc);
     Ok(acc)
@@ -352,9 +391,47 @@ pub async fn msa_login(app: AppHandle) -> Result<MsaAccount, String> {
 
 #[tauri::command]
 pub async fn msa_logout(app: AppHandle) -> Result<(), String> {
+    let mut store = load_account_store(&app);
+    if let Some(active) = store.active_uuid.take() {
+        store.accounts.retain(|account| account.uuid != active);
+    }
+    save_account_store(&app, &store)?;
     delete_account_file(&app);
     let _ = app.emit("auth-changed", serde_json::Value::Null);
     Ok(())
+}
+
+#[tauri::command]
+pub fn list_accounts(app: AppHandle) -> Vec<AccountSummary> {
+    load_account_store(&app).accounts.into_iter().map(|account| AccountSummary { uuid: account.uuid, username: account.username }).collect()
+}
+
+#[tauri::command]
+pub fn switch_account(app: AppHandle, uuid: String) -> Result<MsaAccount, String> {
+    let mut store = load_account_store(&app);
+    let account = store.accounts.iter().find(|account| account.uuid == uuid).cloned().ok_or_else(|| "Account not found.".to_string())?;
+    store.active_uuid = Some(uuid);
+    save_account_store(&app, &store)?;
+    save_account_file(&app, &account)?;
+    let _ = app.emit("auth-changed", &account);
+    Ok(account)
+}
+
+#[tauri::command]
+pub fn remove_account(app: AppHandle, uuid: String) -> Result<(), String> {
+    let mut store = load_account_store(&app);
+    store.accounts.retain(|account| account.uuid != uuid);
+    if store.active_uuid.as_deref() == Some(uuid.as_str()) {
+        store.active_uuid = store.accounts.first().map(|account| account.uuid.clone());
+        if let Some(account) = store.accounts.first() {
+            save_account_file(&app, account)?;
+            let _ = app.emit("auth-changed", account);
+        } else {
+            delete_account_file(&app);
+            let _ = app.emit("auth-changed", serde_json::Value::Null);
+        }
+    }
+    save_account_store(&app, &store)
 }
 
 #[tauri::command]
@@ -377,6 +454,13 @@ pub async fn get_account(app: AppHandle) -> Option<MsaAccount> {
     match full_auth_from_refresh(&client, &account.refresh_token).await {
         Ok(refreshed) => {
             if save_account_file(&app, &refreshed).is_ok() {
+                let mut store = load_account_store(&app);
+                for account in &mut store.accounts {
+                    if account.uuid == refreshed.uuid {
+                        *account = refreshed.clone();
+                    }
+                }
+                let _ = save_account_store(&app, &store);
                 let _ = app.emit("auth-changed", &refreshed);
                 Some(refreshed)
             } else {
@@ -533,4 +617,88 @@ pub async fn get_account_textures(app: AppHandle) -> Result<AccountTextures, Str
         skin_data_url: skin_data,
         cape_data_url: cape_data,
     })
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct OwnedCape {
+    pub id: String,
+    pub state: String,
+    pub url: String,
+    pub alias: String,
+}
+
+#[tauri::command]
+pub async fn list_owned_capes(app: AppHandle) -> Result<Vec<OwnedCape>, String> {
+    let acc = load_account_file(&app).ok_or("No account signed in")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let res = client
+        .get(MC_PROFILE_URL)
+        .bearer_auth(&acc.mc_access_token)
+        .send()
+        .await
+        .map_err(|e| format!("Profile request failed: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Mojang API returned {}", res.status()));
+    }
+    let body: serde_json::Value = res.json().await.map_err(|e| format!("Invalid JSON: {e}"))?;
+    let capes = body["capes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    Some(OwnedCape {
+                        id: c["id"].as_str()?.to_string(),
+                        state: c["state"].as_str().unwrap_or("INACTIVE").to_string(),
+                        url: c["url"].as_str().unwrap_or("").to_string(),
+                        alias: c["alias"].as_str().unwrap_or("").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(capes)
+}
+
+#[tauri::command]
+pub async fn equip_cape(app: AppHandle, cape_id: String) -> Result<(), String> {
+    let acc = load_account_file(&app).ok_or("No account signed in")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let url = format!("{}/capes/active", MC_PROFILE_URL);
+    let res = client
+        .put(&url)
+        .bearer_auth(&acc.mc_access_token)
+        .json(&serde_json::json!({ "capeId": cape_id }))
+        .send()
+        .await
+        .map_err(|e| format!("Equip cape failed: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Mojang API returned {}", res.status()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn unequip_cape(app: AppHandle) -> Result<(), String> {
+    let acc = load_account_file(&app).ok_or("No account signed in")?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP client error: {e}"))?;
+    let url = format!("{}/capes/active", MC_PROFILE_URL);
+    let res = client
+        .delete(&url)
+        .bearer_auth(&acc.mc_access_token)
+        .send()
+        .await
+        .map_err(|e| format!("Unequip cape failed: {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Mojang API returned {}", res.status()));
+    }
+    Ok(())
 }

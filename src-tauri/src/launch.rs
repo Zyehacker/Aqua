@@ -82,7 +82,50 @@ fn offline_uuid(name: &str) -> String {
     )
 }
 
-fn effective_version_id(settings: &Settings) -> String {
+pub fn tokenize_jvm_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_double_quote = false;
+    let mut in_single_quote = false;
+    let mut escape = false;
+
+    for ch in input.chars() {
+        if escape {
+            current.push(ch);
+            escape = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => {
+                escape = true;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            c if c.is_whitespace() && !in_double_quote && !in_single_quote => {
+                if !current.is_empty() {
+                    args.push(current);
+                    current = String::new();
+                }
+            }
+            _ => {
+                current.push(ch);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
+pub(crate) fn effective_version_id(settings: &Settings) -> String {
     if settings.loader_type == "fabric" {
         let base = settings.version.trim();
         let loader = settings.fabric_loader_version.clone().unwrap_or_default();
@@ -105,43 +148,6 @@ fn effective_version_id(settings: &Settings) -> String {
     } else {
         settings.version.clone()
     }
-}
-
-#[tauri::command]
-pub async fn launch_minecraft(
-    app: AppHandle,
-    state: State<'_, LaunchState>,
-    settings: Settings,
-) -> Result<(), String> {
-    {
-        let mut running = state.running.lock().map_err(|e| e.to_string())?;
-        if *running {
-            return Err("Minecraft is already running.".into());
-        }
-        *running = true;
-    }
-
-    let _ = app.emit(
-        "launch-status",
-        serde_json::json!({
-            "phase": "checking",
-            "message": "Resolving Java..."
-        }),
-    );
-    append_launcher_log("info", "launch", "Resolving Java...");
-
-    let result = build_and_spawn(&app, &settings).await;
-    if let Err(e) = &result {
-        if let Ok(mut running) = state.running.lock() {
-            *running = false;
-        }
-        append_launcher_log("error", "launch", e);
-        let _ = app.emit(
-            "launch-status",
-            serde_json::json!({"phase": "error", "message": e}),
-        );
-    }
-    result
 }
 
 #[tauri::command]
@@ -176,7 +182,7 @@ pub fn stop_minecraft(state: State<'_, LaunchState>) -> Result<(), String> {
         })
 }
 
-fn load_effective_version_json(
+pub(crate) fn load_effective_version_json(
     mc_dir: &std::path::Path,
     version_id: &str,
 ) -> Result<(serde_json::Value, PathBuf), String> {
@@ -565,7 +571,7 @@ fn apply_performance_profile(game_dir: &std::path::Path, profile: &str) -> Resul
     Ok(())
 }
 
-async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let mc_dir = settings
         .mc_dir
         .clone()
@@ -580,12 +586,30 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         &format!("Using launcher root: {}", mc_dir.display()),
     );
 
-    let meta = if let Some(id) = &settings.instance_id {
-        if !id.trim().is_empty() {
-            crate::mods::read_metadata(&mc_dir, id)
-        } else {
-            None
+    let selected_instance_id = settings.instance_id.clone().filter(|id| !id.trim().is_empty());
+    let meta = if let Some(id) = &selected_instance_id {
+        let instance_dir = crate::settings::instance_dir(&mc_dir, id);
+        let instance_json = instance_dir.join("instance.json");
+        if !instance_json.exists() {
+            return Err(format!(
+                "Selected instance '{id}' is missing its metadata file at {}.",
+                instance_json.display()
+            ));
         }
+        let raw = std::fs::read_to_string(&instance_json)
+            .map_err(|error| format!("Unable to read instance metadata for '{id}': {error}"))?;
+        let metadata: crate::mods::InstanceMetadata = serde_json::from_str(&raw).map_err(|error| {
+            format!(
+                "Selected instance '{id}' metadata is corrupted: {error}. Please repair or recreate the instance."
+            )
+        })?;
+        if metadata.id.trim() != id {
+            return Err(format!(
+                "Selected instance '{id}' metadata does not match the chosen instance ID. Expected '{id}' but found '{}'.",
+                metadata.id
+            ));
+        }
+        Some(metadata)
     } else {
         None
     };
@@ -753,16 +777,20 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
         .and_then(|m| m.java_args.clone())
         .unwrap_or_else(|| settings.jvm_args.clone());
     let mut seen_jvm_args = std::collections::HashSet::new();
-    for arg in jvm_args.split_whitespace().map(str::trim).filter(|arg| !arg.is_empty()) {
-        if arg.starts_with("-Xmx")
-            || arg.starts_with("-Xms")
-            || arg == "--sun-misc-unsafe-memory-access=allow"
-        {
-            append_launcher_log("warn", "java", &format!("Ignoring unsupported JVM argument: {arg}"));
+    for arg in tokenize_jvm_args(&jvm_args) {
+        let trimmed = arg.trim();
+        if trimmed.is_empty() {
             continue;
         }
-        if seen_jvm_args.insert(arg.to_string()) {
-            add_arg(&mut cmd, arg.to_string());
+        if trimmed.starts_with("-Xmx")
+            || trimmed.starts_with("-Xms")
+            || trimmed == "--sun-misc-unsafe-memory-access=allow"
+        {
+            append_launcher_log("warn", "java", &format!("Ignoring unsupported JVM argument: {trimmed}"));
+            continue;
+        }
+        if seen_jvm_args.insert(trimmed.to_string()) {
+            add_arg(&mut cmd, trimmed.to_string());
         }
     }
     if java_major >= 17 && seen_jvm_args.insert("--enable-native-access=ALL-UNNAMED".to_string()) {
@@ -817,7 +845,11 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
     add_arg(&mut cmd, cp_str.clone());
     add_arg(&mut cmd, main_class.clone());
 
-    let active = load_account_file(app);
+    let active = if settings.offline_mode {
+        None
+    } else {
+        load_account_file(app)
+    };
     let (username, uuid, access_token, user_type) = match active {
         Some(acc) => (
             acc.username,
@@ -826,10 +858,16 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
             "msa".to_string(),
         ),
         None => {
-            let u = if settings.username.trim().is_empty() {
+            let offline_name = settings
+                .offline_profiles
+                .iter()
+                .find(|profile| Some(profile.id.as_str()) == settings.active_offline_profile_id.as_deref())
+                .map(|profile| profile.name.as_str())
+                .unwrap_or(settings.offline_profile_name.as_str());
+            let u = if offline_name.trim().is_empty() {
                 "AquaPlayer".to_string()
             } else {
-                settings.username.clone()
+                offline_name.to_string()
             };
             let id = offline_uuid(&u);
             (u, id, "0".to_string(), "legacy".to_string())
@@ -914,6 +952,18 @@ async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Result<(), Str
             "--versionType".into(),
             replacements["${version_type}"].clone(),
         ];
+    }
+
+    if settings.resolution_width > 0 && settings.resolution_height > 0 {
+        game_args.extend([
+            "--width".to_string(),
+            settings.resolution_width.to_string(),
+            "--height".to_string(),
+            settings.resolution_height.to_string(),
+        ]);
+    }
+    if settings.fullscreen {
+        game_args.push("--fullscreen".to_string());
     }
 
     for arg in game_args {

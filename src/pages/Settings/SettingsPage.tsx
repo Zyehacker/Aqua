@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ExternalLink } from 'lucide-react'
 import Toggle from '../../components/ui/Toggle'
 import { useToast } from '../../hooks/useToast'
-import { appActions, useAppStore, type BackgroundChoice } from '../../stores/appStore'
+import { appActions, useAppStore } from '../../stores/appStore'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import * as tauri from '../../utils/tauri'
 import { useTranslation } from '../../useTranslation'
@@ -25,9 +25,9 @@ export default function SettingsPage() {
   const accentColor = useAppStore((s) => s.accentColor)
   const reduceMotion = useAppStore((s) => s.reduceMotion)
   const uiSounds = useAppStore((s) => s.uiSounds)
-  const soundVolume = useAppStore((s) => s.soundVolume)
-  const density = useAppStore((s) => s.density)
-  const background = useAppStore((s) => s.background)
+  const uiSoundVolume = useAppStore((s) => s.uiSoundVolume)
+  const backgroundMode = useAppStore((s) => s.backgroundMode)
+  const layoutDensity = useAppStore((s) => s.layoutDensity)
   const { settings, jvm, javaRuntimes, busy, updateSettings, detectJava } = useLauncherData()
 
   const recommendedRam = jvm?.recommended_ram_mb ?? 2048
@@ -35,7 +35,6 @@ export default function SettingsPage() {
   const [ram, setRam] = useState(settings?.ram_mb ?? recommendedRam)
   const [showSnapshots, setShowSnapshots] = useState(settings?.show_snapshots ?? false)
   const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(settings?.minimize_on_launch ?? true)
-  const [discordRpc, setDiscordRpc] = useState(() => window.localStorage.getItem('aqua.discord.rpc') !== 'false')
   const [hardware, setHardware] = useState<tauri.HardwareInfo | null>(null)
 
   useEffect(() => {
@@ -74,9 +73,17 @@ export default function SettingsPage() {
           <h2 className="settings-section__title">{t('settings.general')}</h2>
           <div className="settings-rows">
             <div className="settings-row">
+              <div className="settings-row__label"><strong>Confirm before launching</strong><span>Ask before starting Minecraft from the Home page</span></div>
+              <Toggle checked={settings?.confirm_before_launch ?? false} onChange={(value) => void saveSettings({ confirm_before_launch: value })} label="Confirm before launching" />
+            </div>
+            <div className="settings-row">
+              <div className="settings-row__label"><strong>UI sounds</strong><span>Play restrained sounds for important actions and notifications</span></div>
+              <div className="settings-row__control"><Toggle checked={uiSounds} label="UI sounds" onChange={(value) => appActions.setUiSounds(value)} /><input type="range" min="0" max="1" step="0.05" value={uiSoundVolume} disabled={!uiSounds} aria-label="UI sound volume" onChange={(event) => appActions.setUiSoundVolume(Number(event.target.value))} /></div>
+            </div>
+            <div className="settings-row">
               <div className="settings-row__label">
                 <strong>Performance profile</strong>
-                <span>{hardware ? `${hardware.classification === 'low' ? 'Low-end' : hardware.classification === 'mid' ? 'Mid-range' : 'High-end'} hardware · ${hardware.explanation}` : 'Choose a conservative preset for your hardware'}</span>
+                <span>{hardware ? `${hardware.classification === 'low' ? 'Low-end' : hardware.classification === 'mid' ? 'Mid-range' : 'High-end'} hardware · ${hardware.explanation}` : 'Choose a preset for your hardware'}</span>
               </div>
               <div className="settings-row__control">
                 <select
@@ -124,16 +131,6 @@ export default function SettingsPage() {
                 </button>
               </div>
             </div>
-            <div className="settings-row settings-row--backgrounds">
-              <div className="settings-row__label"><strong>{t('settings.background')}</strong><span>{t('settings.backgroundDescription')}</span></div>
-              <div className="background-picker">
-                {(['background1', 'background2', 'background3', 'background4', 'background5', 'random'] as BackgroundChoice[]).map((choice) => (
-                  <button key={choice} type="button" className={background === choice ? 'active' : ''} onClick={() => appActions.setBackground(choice)} aria-label={choice === 'random' ? 'Random background' : `Background ${choice.replace('background', '')}`}>
-                    {choice === 'random' ? 'Random' : <img src={`/backgrounds/${choice}.png`} alt="" />}
-                  </button>
-                ))}
-              </div>
-            </div>
             <div className="settings-row">
               <div className="settings-row__label">
                 <strong>{t('settings.accent')}</strong>
@@ -174,49 +171,43 @@ export default function SettingsPage() {
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>{t('settings.density')}</strong>
-                <span>Comfortable spacing or tighter compact mode</span>
+                <strong>Background</strong>
+                <span>Choose the launcher background style</span>
               </div>
               <div className="settings-row__control">
-                <button type="button" className="settings-btn" onClick={() => appActions.setDensity(density === 'comfortable' ? 'compact' : 'comfortable')}>
-                  {density === 'comfortable' ? t('settings.comfortable') : t('settings.compact')}
-                </button>
+                <select
+                  value={backgroundMode}
+                  aria-label="Background mode"
+                  onChange={(event) => {
+                    appActions.setBackgroundMode(event.target.value as 'default' | 'solid' | 'gradient' | 'video')
+                    toast.pushToast('Background updated', 'success')
+                  }}
+                >
+                  <option value="default">Default</option>
+                  <option value="solid">Solid</option>
+                  <option value="gradient">Gradient</option>
+                  <option value="video">Video</option>
+                </select>
               </div>
             </div>
             <div className="settings-row">
               <div className="settings-row__label">
-                <strong>{t('settings.uiSounds')}</strong>
-                <span>{t('settings.uiSoundsDescription')}</span>
+                <strong>Layout density</strong>
+                <span>Adjust spacing between UI elements</span>
               </div>
-              <Toggle checked={uiSounds} onChange={(next) => appActions.setUiSounds(next)} label="UI sounds" />
-            </div>
-            <div className="settings-row">
-              <div className="settings-row__label">
-                <strong>{t('settings.volume')}</strong>
-                <span>{soundVolume.toFixed(2)} · quieter, tasteful feedback</span>
+              <div className="settings-row__control">
+                <select
+                  value={layoutDensity}
+                  aria-label="Layout density"
+                  onChange={(event) => {
+                    appActions.setLayoutDensity(event.target.value as 'comfortable' | 'compact')
+                    toast.pushToast('Layout updated', 'success')
+                  }}
+                >
+                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">Compact</option>
+                </select>
               </div>
-              <div className="settings-row__control settings-row__control--wide">
-                <input type="range" min={0} max={1} step={0.05} value={soundVolume} onChange={(e) => appActions.setSoundVolume(Number(e.target.value))} style={{ width: 120 }} />
-              </div>
-            </div>
-            <div className="settings-row">
-              <div className="settings-row__label">
-                <strong>{t('settings.discord')}</strong>
-                <span>{t('settings.discordDescription')}</span>
-              </div>
-              <Toggle checked={discordRpc} onChange={(next) => void (async () => {
-                try {
-                  if (next) {
-                    await tauri.startRichPresence()
-                    await tauri.setIdlePresence()
-                  }
-                  else await tauri.stopRichPresence()
-                  window.localStorage.setItem('aqua.discord.rpc', String(next))
-                  setDiscordRpc(next)
-                } catch (err) {
-                  toast.pushToast(err instanceof Error ? err.message : 'Unable to update Discord rich presence.', 'error')
-                }
-              })()} label="Discord rich presence" />
             </div>
           </div>
         </section>
@@ -244,6 +235,18 @@ export default function SettingsPage() {
                   style={{ width: '140px' }}
                 />
               </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row__label"><strong>Resolution</strong><span>Window size used when Minecraft starts</span></div>
+              <div className="settings-row__control"><input className="settings-inline-input" type="number" min={640} value={settings?.resolution_width ?? 854} onChange={(event) => void saveSettings({ resolution_width: Number(event.target.value) || 854 })} aria-label="Resolution width" /><span>×</span><input className="settings-inline-input" type="number" min={360} value={settings?.resolution_height ?? 480} onChange={(event) => void saveSettings({ resolution_height: Number(event.target.value) || 480 })} aria-label="Resolution height" /></div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row__label"><strong>Fullscreen</strong><span>Start Minecraft in fullscreen mode</span></div>
+              <Toggle checked={settings?.fullscreen ?? false} onChange={(value) => void saveSettings({ fullscreen: value })} label="Fullscreen" />
+            </div>
+            <div className="settings-row">
+              <div className="settings-row__label"><strong>JVM arguments</strong><span>Additional arguments appended to the Java launch</span></div>
+              <input className="settings-wide-input" value={settings?.jvm_args ?? ''} onChange={(event) => void saveSettings({ jvm_args: event.target.value })} aria-label="JVM arguments" placeholder="-XX:+UseG1GC" />
             </div>
             <div className="settings-row">
               <div className="settings-row__label">

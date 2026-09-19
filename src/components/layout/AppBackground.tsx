@@ -1,30 +1,50 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/appStore'
 
-const BACKGROUNDS = [1, 2, 3, 4, 5].map((number) => `/backgrounds/background${number}.png`)
-
 export default function AppBackground() {
-  const choice = useAppStore((state) => state.background)
-  const [active, setActive] = useState(0)
-  const [previous, setPrevious] = useState<number | null>(null)
-  const activeRef = useRef(active)
+  const reduceMotion = useAppStore((s) => s.reduceMotion)
+  const [videoFailed, setVideoFailed] = useState(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
 
   useEffect(() => {
-    const next = choice === 'random' ? Math.floor(Math.random() * BACKGROUNDS.length) : Math.max(0, Number(choice.replace('background', '')) - 1)
-    const image = new Image()
-    image.onload = () => {
-      setPrevious(activeRef.current)
-      activeRef.current = next
-      setActive(next)
-      window.setTimeout(() => setPrevious(null), 500)
+    const video = videoRef.current
+    if (!video || reduceMotion || videoFailed) return undefined
+
+    const recoverPlayback = () => {
+      if (document.hidden || video.ended) return
+      video.play().catch(() => undefined)
     }
-    image.src = BACKGROUNDS[next]
-  }, [choice])
+    const onVisibility = () => { if (!document.hidden) recoverPlayback() }
+    video.addEventListener('pause', recoverPlayback)
+    video.addEventListener('stalled', recoverPlayback)
+    video.addEventListener('error', recoverPlayback)
+    document.addEventListener('visibilitychange', onVisibility)
+    recoverPlayback()
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      video.removeEventListener('pause', recoverPlayback)
+      video.removeEventListener('stalled', recoverPlayback)
+      video.removeEventListener('error', recoverPlayback)
+    }
+  }, [reduceMotion, videoFailed])
 
   return (
     <div className="app-background" aria-hidden="true">
-      {previous !== null ? <img className="app-background__media app-background__media--previous" src={BACKGROUNDS[previous]} alt="" /> : null}
-      <img className="app-background__media app-background__media--active" src={BACKGROUNDS[active]} alt="" />
+      {!videoFailed ? (
+        <video
+          ref={videoRef}
+          className="app-background__media"
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload="auto"
+          onError={() => setVideoFailed(true)}
+        >
+          <source src="/backgrounds/livebg.mp4" type="video/mp4" />
+        </video>
+      ) : null}
       <div className="app-background__overlay" />
       <div className="app-background__vignette" />
     </div>

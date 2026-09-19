@@ -38,6 +38,14 @@ export type LauncherSettings = {
   java_runtime?: string | null
   mc_dir?: string | null
   instance_id?: string | null
+  offline_mode: boolean
+  offline_profile_name: string
+  offline_profiles: Array<{ id: string; name: string }>
+  active_offline_profile_id?: string | null
+  confirm_before_launch: boolean
+  resolution_width: number
+  resolution_height: number
+  fullscreen: boolean
   ram_mb: number
   jvm_args: string
   performance_profile: 'maximum' | 'balanced' | 'quality' | string
@@ -86,6 +94,8 @@ export type ForgeLoader = {
 export type BackendInstance = {
   id: string
   name: string
+  icon: string
+  icon_data?: string | null
   mc_version: string
   loader: 'vanilla' | 'fabric' | 'forge' | string
   loader_version?: string | null
@@ -106,17 +116,29 @@ export type BackendInstance = {
   shader_count: number
 }
 
+const INVOKE_TIMEOUT_MS = 5 * 60 * 1000
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
   const tauri = window.__TAURI__
   try {
+    let request: Promise<T> | null = null
     if (tauri?.core && typeof tauri.core.invoke === 'function') {
-      return await tauri.core.invoke(cmd, args)
+      request = tauri.core.invoke(cmd, args)
+    } else if (tauri && typeof tauri.invoke === 'function') {
+      request = tauri.invoke(cmd, args)
+    } else if (window.ipc && typeof window.ipc.invoke === 'function') {
+      request = window.ipc.invoke(cmd, args)
     }
-    if (tauri && typeof tauri.invoke === 'function') {
-      return await tauri.invoke(cmd, args)
-    }
-    if (window.ipc && typeof window.ipc.invoke === 'function') {
-      return await window.ipc.invoke(cmd, args)
+
+    if (!request) return null
+    let timeoutId: number | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = window.setTimeout(() => reject(new Error(`${cmd} timed out. Try again.`)), INVOKE_TIMEOUT_MS)
+    })
+    try {
+      return await Promise.race([request, timeout])
+    } finally {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -139,6 +161,14 @@ export async function getDefaultMcDir() {
 
 export async function readLogs() {
   return invoke<string>('read_logs')
+}
+
+export async function openLatestLog() {
+  return invoke<void>('open_latest_log')
+}
+
+export async function openLogsFolder() {
+  return invoke<void>('open_logs_folder')
 }
 
 export async function listVersions(mcDir?: string | null) {
@@ -164,6 +194,12 @@ export async function installVersion(
   mcDir?: string | null,
 ) {
   return invoke<[string, string | null]>('install_version', { loader, mcVersion, fabricLoaderVersion, mcDir })
+}
+
+export type AquaHudInstallResult = { version: string; path: string; already_installed: boolean }
+
+export async function installAquaHud(instanceId: string, mcVersion: string, mcDir?: string | null) {
+  return invoke<AquaHudInstallResult>('install_aqua_hud', { instanceId, mcVersion, mcDir })
 }
 
 export async function ensureJava(settings: LauncherSettings) {
@@ -212,6 +248,8 @@ export type MsaAccount = {
   expires_at: number
 }
 
+export type AccountSummary = Pick<MsaAccount, 'uuid' | 'username'>
+
 function settingsForInstalledVersion(settings: LauncherSettings, instanceId: string): LauncherSettings {
   return {
     ...settings,
@@ -252,6 +290,10 @@ export async function updateInstance(instanceId: string, update: Record<string, 
   return invoke<BackendInstance>('update_instance', { instanceId, update, mcDir })
 }
 
+export async function saveInstanceIcon(instanceId: string, sourcePath: string, mcDir?: string | null) {
+  return invoke<string>('save_instance_icon', { instanceId, sourcePath, mcDir })
+}
+
 export async function validateInstance(instanceId: string, mcDir?: string | null) {
   return invoke<{ healthy: boolean; issues: Array<{ kind: string; path: string; message: string }> }>('validate_instance', { instanceId, mcDir })
 }
@@ -290,7 +332,10 @@ export async function launchInstance(instance?: string | BackendInstance) {
       : settingsForInstalledVersion(settings, instance)
   }
 
-  const result = await invoke<void>('launch_minecraft', { settings: launchSettings })
+  const result = await invoke<LauncherLaunchResult>('launch_instance_v2', { settings: launchSettings })
+  if (result && !result.ok) {
+    throw new Error(result.error || 'Launcher validation failed.')
+  }
   if (typeof instance === 'object') {
     await markInstancePlayed(instance.id, settings.mc_dir).catch(() => null)
   } else if (instance) {
@@ -298,6 +343,12 @@ export async function launchInstance(instance?: string | BackendInstance) {
     await markInstancePlayed(resolvedInstance?.id ?? instance, settings.mc_dir).catch(() => null)
   }
   return result
+}
+
+export type LauncherLaunchResult = {
+  ok: boolean
+  error?: string | null
+  status?: { phase?: string; message?: string; percent?: number } | null
 }
 
 export async function isMinecraftRunning() {
@@ -333,6 +384,18 @@ export async function microsoftLogout() {
 
 export async function getAccount() {
   return invoke<MsaAccount>('get_account')
+}
+
+export async function listAccounts() {
+  return (await invoke<AccountSummary[]>('list_accounts')) ?? []
+}
+
+export async function switchAccount(uuid: string) {
+  return invoke<MsaAccount>('switch_account', { uuid })
+}
+
+export async function removeAccount(uuid: string) {
+  return invoke<void>('remove_account', { uuid })
 }
 
 export type AccountTextures = {
@@ -507,4 +570,21 @@ export async function removeInstanceItem(
     category,
     mcDir,
   })
+}
+
+export type ServerInfo = {
+  host: string
+  port: number
+  ping_ms?: number | null
+  version_name?: string | null
+  protocol?: number | null
+  online?: number | null
+  max?: number | null
+  description?: string | null
+  favicon_data_url?: string | null
+  error?: string | null
+}
+
+export function pingServer(host: string, port = 25565) {
+  return invoke<ServerInfo[]>('ping_server', { host, port })
 }

@@ -5,7 +5,7 @@ import { LauncherDataContext } from './launcherDataContext'
 const DEFAULT_SETTINGS: tauri.LauncherSettings = {
   language: 'en',
   username: 'Player', version: '', loader_type: 'vanilla', fabric_loader_version: null,
-  java_path: null, java_runtime: null, mc_dir: null, instance_id: null, ram_mb: 2048,
+  java_path: null, java_runtime: null, mc_dir: null, instance_id: null, offline_mode: false, offline_profile_name: 'Aqua Player', offline_profiles: [{ id: 'default-offline', name: 'Aqua Player' }], active_offline_profile_id: 'default-offline', confirm_before_launch: false, resolution_width: 854, resolution_height: 480, fullscreen: false, ram_mb: 2048,
   jvm_args: '', show_snapshots: false, minimize_on_launch: true,
   performance_profile: 'balanced',
 }
@@ -25,14 +25,25 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
     setLoading(true); setError(null)
     try {
       const nextSettings = (await tauri.getSettings()) ?? DEFAULT_SETTINGS
-      const nextInstances = await tauri.listInstances(nextSettings.mc_dir)
-      setSettings(nextSettings)
-      setInstances(nextInstances ?? [])
+      const nextInstances = (await tauri.listInstances(nextSettings.mc_dir)) ?? []
+
+      const sanitizedInstanceId = nextSettings.instance_id && nextInstances.some((instance) => instance.id === nextSettings.instance_id)
+        ? nextSettings.instance_id
+        : null
+
+      const persistedSettings = sanitizedInstanceId === nextSettings.instance_id
+        ? nextSettings
+        : { ...nextSettings, instance_id: sanitizedInstanceId }
+
+      if (persistedSettings !== nextSettings) {
+        await tauri.saveSettings(persistedSettings)
+      }
+
+      setSettings(persistedSettings)
+      setInstances(nextInstances)
       setJavaPath(nextSettings.java_path ?? null)
       setLoading(false)
 
-      // These calls are useful but not required to render the launcher shell.
-      // Keep them off the critical path so each lazy route can show its own skeleton.
       void Promise.all([
         tauri.listRemoteVersions(nextSettings.show_snapshots),
         tauri.generateOptimalArgs(),
@@ -42,7 +53,9 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
         setJvm(nextJvm)
         setJavaRuntimes(nextJavaRuntimes ?? [])
       }).catch((err) => {
-        setError(err instanceof Error ? err.message : 'Unable to load optional launcher data.')
+        // Non-critical: versions/JVM/Java runtime are nice-to-have extras that the
+        // pages load lazily when needed. Never block app startup on these.
+        if (import.meta.env.DEV) console.warn('Optional launcher data unavailable:', err)
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load launcher data.')
@@ -93,7 +106,7 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
       if (active) void tauri.startRichPresence().then(() => tauri.setIdlePresence()).catch(() => undefined)
     }
     void tauri.listen<{ message?: string }>('richpresence-unavailable', (event) => {
-      if (active && event.message) setError(event.message)
+      if (active && event.message) console.warn(event.message)
     }).then((cleanup) => {
       if (active) unsubscribe = cleanup
       else cleanup?.()
