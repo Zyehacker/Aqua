@@ -13,6 +13,7 @@ mod portable;
 mod richpresence;
 mod server_browser;
 mod settings;
+mod update;
 
 use std::sync::Mutex;
 
@@ -27,6 +28,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // Restore window size/position/maximized from persisted settings (best-effort)
             let handle = app.handle();
@@ -90,6 +92,7 @@ fn main() {
                     }
                 });
             }
+            update::start_updater_check_loop(handle.clone());
             Ok(())
         })
         .manage(LaunchState {
@@ -165,6 +168,9 @@ fn main() {
             download_manager::cancel_download,
             download_manager::list_downloads,
             server_browser::ping_server,
+            update::check_for_update,
+            update::install_update,
+            update::restart_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aqua Client");

@@ -30,9 +30,17 @@
       "csp": "default-src 'self'; script-src 'self'; img-src 'self' data: blob: https://utdljwcrvilnytizejyv.supabase.co https://api.modrinth.com https://cdn.modrinth.com https://modrinth.com https://curseforge.com https://www.curseforge.com; media-src 'self'; connect-src 'self' https://utdljwcrvilnytizejyv.supabase.co https://api.modrinth.com https://modrinth.com https://curseforge.com https://www.curseforge.com http://localhost:5173 http://localhost:5174 ws://localhost:5173 ws://localhost:5174; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMDg5NDkxMEMyNUIwQzAKUldUQXNDVU1rWlFJOFN2MmZMQmFjRkx5R1ZjWjBaN3NWUnY2WXcwOEozeDZvUFBiMlFselJYRlEK",
+      "endpoints": [
+        "https://github.com/Zyehacker/Aqua-Client-Releases/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "targets": [
       "nsis",
       "appimage",

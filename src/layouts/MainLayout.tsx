@@ -11,6 +11,7 @@ import { EXTERNAL_LINKS } from '../config/externalLinks'
 import { useLauncherData } from '../hooks/useLauncherDataHook'
 import AccountOverlay from '../components/account/AccountOverlay'
 import MaintenanceBanner from '../components/maintenance/MaintenanceBanner'
+import UpdateModal from '../components/updater/UpdateModal'
 
 function DiscordIcon() {
   return (
@@ -82,6 +83,7 @@ export default function MainLayout() {
       </div>
 
       <AccountOverlay />
+      <UpdateModal />
     </div>
   )
 }
