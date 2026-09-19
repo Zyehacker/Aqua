@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
@@ -113,9 +113,12 @@ jobs:
           find staging -type f \( \
             -iname '*.exe' -o \
             -iname '*.msi' -o \
+            -iname '*.nsis.zip' -o \
             -iname '*.appimage' -o \
+            -iname '*.appimage.tar.gz' -o \
             -iname '*.deb' -o \
             -iname '*.dmg' -o \
+            -iname '*.app.tar.gz' -o \
             -iname '*.sig' \
           \) -exec cp {} release-assets/ \;
 
@@ -135,28 +138,33 @@ jobs:
             })
           }
 
-          const manifests = walk(staging).filter((file) => path.basename(file) === 'latest.json')
-          if (!manifests.length) throw new Error('No Tauri latest.json metadata was generated.')
+          const updaterArtifacts = walk(staging).filter((file) => {
+            const name = path.basename(file).toLowerCase()
+            return name.endsWith('.nsis.zip') || name.endsWith('.appimage.tar.gz') || name.endsWith('.app.tar.gz')
+          })
+          if (!updaterArtifacts.length) throw new Error('No signed Tauri updater artifacts were generated.')
 
-          const merged = JSON.parse(fs.readFileSync(manifests[0], 'utf8'))
-          merged.platforms = {}
-
-          for (const manifestPath of manifests) {
-            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
-            for (const [platform, update] of Object.entries(manifest.platforms ?? {})) {
-              const filename = path.basename(new URL(update.url).pathname)
-              if (!fs.existsSync(path.join(assetsDir, filename))) {
-                throw new Error(`Updater asset ${filename} for ${platform} was not collected.`)
-              }
-              merged.platforms[platform] = {
-                ...update,
-                url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
-              }
+          const platforms = {}
+          for (const artifactPath of updaterArtifacts) {
+            const filename = path.basename(artifactPath)
+            const signaturePath = path.join(path.dirname(artifactPath), `${filename}.sig`)
+            if (!fs.existsSync(signaturePath)) throw new Error(`Missing Tauri signature for ${filename}.`)
+            const platformDirectory = artifactPath.split(path.sep).find((segment) => segment.startsWith('aqua-'))
+            if (!platformDirectory) throw new Error(`Unable to determine matrix platform for ${filename}.`)
+            const os = platformDirectory === 'aqua-macos' ? 'darwin' : platformDirectory.replace(/^aqua-/, '')
+            const arch = /(?:aarch64|arm64)/i.test(filename) ? 'aarch64' : 'x86_64'
+            const key = `${os}-${arch}`
+            if (platforms[key]) continue
+            platforms[key] = {
+              signature: fs.readFileSync(signaturePath, 'utf8').trim(),
+              url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
             }
           }
 
-          if (!Object.keys(merged.platforms).length) throw new Error('Tauri latest.json contained no platform entries.')
-          fs.writeFileSync(path.join(assetsDir, 'latest.json'), `${JSON.stringify(merged, null, 2)}\n`)
+          if (!Object.keys(platforms).length) throw new Error('No platform entries could be created from signed Tauri artifacts.')
+          const version = tag.replace(/^v/, '')
+          const latest = { version, notes: '', pub_date: new Date().toISOString(), platforms }
+          fs.writeFileSync(path.join(assetsDir, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`)
           NODE
 
           test -s release-assets/latest.json
