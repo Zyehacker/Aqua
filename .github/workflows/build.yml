@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  release:
+  build:
+    name: Build ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,15 +35,15 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install Rust stable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
 
-      - name: Install Linux system dependencies
+      - name: Install Linux dependencies
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
@@ -52,11 +53,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
         run: npm ci
 
       - name: Install Tauri CLI
-        run: npm install --save-dev @tauri-apps/cli@latest
+        run: npm install --no-save --no-package-lock @tauri-apps/cli@latest
 
       - name: Build Tauri application
         env:
@@ -64,192 +65,356 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
-      - name: Inspect generated bundle files
+      - name: Validate generated updater artifacts
         shell: bash
         run: |
           set -euo pipefail
-          find src-tauri/target/release/bundle -type f \( \
-            -iname '*.exe' -o \
-            -iname '*.exe.sig' -o \
-            -iname '*.AppImage' -o \
-            -iname '*.AppImage.sig' -o \
-            -iname '*.deb' -o \
-            -iname '*.deb.sig' -o \
-            -iname '*.dmg' -o \
-            -iname '*.dmg.sig' -o \
-            -iname '*.app.tar.gz' -o \
-            -iname '*.app.tar.gz.sig' \
-          \) ! -path '*AppDir*' ! -path '*debian*' ! -path '*DEBIAN*' -print | sort
+
+          BUNDLE="src-tauri/target/release/bundle"
+
+          echo "Generated release artifacts:"
+
+          find "$BUNDLE" -type f \
+            ! -path '*AppDir*' \
+            ! -path '*debian*' \
+            \( \
+              -iname '*.exe' \
+              -o -iname '*.exe.sig' \
+              -o -iname '*.AppImage' \
+              -o -iname '*.AppImage.sig' \
+              -o -iname '*.deb' \
+              -o -iname '*.deb.sig' \
+              -o -iname '*.dmg' \
+              -o -iname '*.dmg.sig' \
+              -o -iname '*.app.tar.gz' \
+              -o -iname '*.app.tar.gz.sig' \
+            \) \
+            -print | sort
 
           case "${{ matrix.platform }}" in
             windows)
-              find src-tauri/target/release/bundle -type f -iname '*.exe' -print -quit | grep -q .
-              find src-tauri/target/release/bundle -type f -iname '*.exe.sig' -print -quit | grep -q .
+              test "$(find "$BUNDLE" -type f -iname '*.exe' ! -path '*AppDir*' | wc -l)" -ge 1
+              test "$(find "$BUNDLE" -type f -iname '*.exe.sig' ! -path '*AppDir*' | wc -l)" -ge 1
               ;;
+
             linux)
-              find src-tauri/target/release/bundle -type f -iname '*.AppImage' -print -quit | grep -q .
-              find src-tauri/target/release/bundle -type f -iname '*.AppImage.sig' -print -quit | grep -q .
+              test "$(find "$BUNDLE" -type f -iname '*.AppImage' ! -path '*AppDir*' | wc -l)" -ge 1
+              test "$(find "$BUNDLE" -type f -iname '*.AppImage.sig' ! -path '*AppDir*' | wc -l)" -ge 1
               ;;
+
             macos)
-              find src-tauri/target/release/bundle -type f -iname '*.app.tar.gz' -print -quit | grep -q .
-              find src-tauri/target/release/bundle -type f -iname '*.app.tar.gz.sig' -print -quit | grep -q .
+              test "$(find "$BUNDLE" -type f -iname '*.app.tar.gz' ! -path '*AppDir*' | wc -l)" -ge 1
+              test "$(find "$BUNDLE" -type f -iname '*.app.tar.gz.sig' ! -path '*AppDir*' | wc -l)" -ge 1
               ;;
           esac
 
-      - name: Upload release artifacts
+          echo "Updater artifacts validated successfully."
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: aqua-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle/**
+          path: src-tauri/target/release/bundle
           if-no-files-found: error
           retention-days: 7
 
   publish:
-    needs: release
+    name: Publish Release
+    needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
+
     env:
       GH_TOKEN: ${{ secrets.AQUA_RELEASES_TOKEN }}
       RELEASE_REPOSITORY: Zyehacker/Aqua-Client-Releases
       RELEASE_TAG: ${{ github.ref_name }}
 
     steps:
-      - name: Require destination repository token
+      - name: Verify release token
         shell: bash
         run: |
+          set -euo pipefail
+
           if [[ -z "${GH_TOKEN:-}" ]]; then
-            echo "AQUA_RELEASES_TOKEN is required to publish to ${RELEASE_REPOSITORY}."
+            echo "AQUA_RELEASES_TOKEN is missing."
             exit 1
           fi
 
-      - name: Download platform artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: aqua-*
           path: staging
           merge-multiple: false
 
-      - name: Collect release assets and build updater metadata
+      - name: Prepare release assets
         shell: bash
         run: |
           set -euo pipefail
+
+          rm -rf release-assets
           mkdir -p release-assets
 
           for platform in windows linux macos; do
-            if [[ ! -d "staging/aqua-${platform}" ]]; then
-              echo "Missing aqua-${platform} matrix artifact."
+            test -d "staging/aqua-${platform}" || {
+              echo "Missing build artifact: aqua-${platform}"
               exit 1
-            fi
+            }
           done
 
-          RELEASE_ASSETS_DIR="$PWD/release-assets" node <<'NODE'
-          const fs = require('node:fs')
-          const path = require('node:path')
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
 
-          const staging = path.resolve('staging')
-          const assetsDir = process.env.RELEASE_ASSETS_DIR
-          const repository = process.env.RELEASE_REPOSITORY
-          const tag = process.env.RELEASE_TAG
+          const staging = path.resolve("staging");
+          const output = path.resolve("release-assets");
 
-          function walk(directory) {
-            return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-              const fullPath = path.join(directory, entry.name)
-              return entry.isDirectory() ? walk(fullPath) : [fullPath]
-            })
+          function walk(dir) {
+            return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+              const full = path.join(dir, entry.name);
+              return entry.isDirectory() ? walk(full) : [full];
+            });
           }
 
-          function platformFor(file) {
-            const directory = file.split(path.sep).find((segment) => segment.startsWith('aqua-'))
-            if (!directory) throw new Error(`Unable to determine matrix platform for ${file}.`)
-            return directory.replace(/^aqua-/, '')
+          function platformOf(file) {
+            const match = file.match(/[\\/]aqua-(windows|linux|macos)[\\/]/);
+            if (!match) {
+              throw new Error(`Cannot determine platform for: ${file}`);
+            }
+            return match[1];
           }
 
-          function isInternalFile(file) {
-            return file.split(path.sep).some((segment) => {
-              const lower = segment.toLowerCase()
-              return lower.endsWith('appdir') || lower === 'debian'
-            })
+          function isIgnored(file) {
+            return file.split(path.sep).some(segment => {
+              const name = segment.toLowerCase();
+              return name.endsWith(".appdir") || name === "debian";
+            });
           }
 
-          function isBundleFile(file) {
-            if (isInternalFile(file)) return false
-            const name = path.basename(file).toLowerCase()
-            return name.endsWith('.exe') || name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.dmg') || name.endsWith('.app.tar.gz')
+          function isReleaseFile(file) {
+            if (isIgnored(file)) return false;
+
+            const name = path.basename(file).toLowerCase();
+
+            return (
+              name.endsWith(".exe") ||
+              name.endsWith(".appimage") ||
+              name.endsWith(".deb") ||
+              name.endsWith(".dmg") ||
+              name.endsWith(".app.tar.gz")
+            );
           }
 
-          const bundleFiles = walk(staging).filter(isBundleFile)
-          if (!bundleFiles.length) throw new Error('No distributable Tauri bundle files were generated.')
+          const files = walk(staging).filter(isReleaseFile);
 
-          const copied = new Set()
-          for (const bundlePath of bundleFiles) {
-            const filename = path.basename(bundlePath)
-            if (copied.has(filename)) throw new Error(`Duplicate release asset filename: ${filename}`)
-            copied.add(filename)
-            fs.copyFileSync(bundlePath, path.join(assetsDir, filename))
+          if (!files.length) {
+            throw new Error("No release bundle files were found.");
+          }
 
-            const signaturePath = `${bundlePath}.sig`
-            if (fs.existsSync(signaturePath)) {
-              const signatureFilename = `${filename}.sig`
-              if (copied.has(signatureFilename)) throw new Error(`Duplicate release asset filename: ${signatureFilename}`)
-              copied.add(signatureFilename)
-              fs.copyFileSync(signaturePath, path.join(assetsDir, signatureFilename))
+          const copied = new Set();
+
+          for (const file of files) {
+            const filename = path.basename(file);
+
+            if (copied.has(filename)) {
+              throw new Error(`Duplicate release filename: ${filename}`);
+            }
+
+            fs.copyFileSync(file, path.join(output, filename));
+            copied.add(filename);
+
+            const signature = `${file}.sig`;
+
+            if (fs.existsSync(signature)) {
+              const sigName = `${filename}.sig`;
+
+              if (copied.has(sigName)) {
+                throw new Error(`Duplicate signature filename: ${sigName}`);
+              }
+
+              fs.copyFileSync(signature, path.join(output, sigName));
+              copied.add(sigName);
             }
           }
 
-          console.log('Generated distributable bundle files:')
-          for (const filename of [...copied].sort()) console.log(`- ${filename}`)
+          function findUpdater(platform, extension) {
+            const candidates = files.filter(file => {
+              return (
+                platformOf(file) === platform &&
+                path.basename(file).toLowerCase().endsWith(extension)
+              );
+            });
 
-          function selectUpdaterArtifact(platform, suffix) {
-            const candidates = bundleFiles.filter((file) => platformFor(file) === platform && path.basename(file).toLowerCase().endsWith(suffix))
-            if (!candidates.length) throw new Error(`Missing ${platform} updater artifact matching ${suffix}.`)
-            const selected = candidates.find((file) => path.basename(file).toLowerCase().includes('setup')) ?? candidates[0]
-            const signaturePath = `${selected}.sig`
-            if (!fs.existsSync(signaturePath)) throw new Error(`Missing signature for updater artifact ${path.basename(selected)}.`)
-            return { file: selected, signaturePath }
-          }
-
-          const updaterArtifacts = {
-            windows: selectUpdaterArtifact('windows', '.exe'),
-            linux: selectUpdaterArtifact('linux', '.appimage'),
-            macos: selectUpdaterArtifact('macos', '.app.tar.gz'),
-          }
-
-          const platforms = {}
-          for (const [platform, updater] of Object.entries(updaterArtifacts)) {
-            const filename = path.basename(updater.file)
-            const os = platform === 'macos' ? 'darwin' : platform
-            const arch = /(?:aarch64|arm64)/i.test(filename) ? 'aarch64' : 'x86_64'
-            platforms[`${os}-${arch}`] = {
-              signature: fs.readFileSync(updater.signaturePath, 'utf8').trim(),
-              url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
+            if (candidates.length === 0) {
+              throw new Error(
+                `Missing ${platform} updater artifact: ${extension}`
+              );
             }
+
+            if (candidates.length > 1) {
+              throw new Error(
+                `Multiple ${platform} updater artifacts found: ${candidates
+                  .map(path.basename)
+                  .join(", ")}`
+              );
+            }
+
+            const file = candidates[0];
+            const signature = `${file}.sig`;
+
+            if (!fs.existsSync(signature)) {
+              throw new Error(
+                `Missing signature for ${path.basename(file)}`
+              );
+            }
+
+            return { file, signature };
           }
-          const version = tag.replace(/^v/, '')
-          const latest = { version, notes: '', pub_date: new Date().toISOString(), platforms }
-          fs.writeFileSync(path.join(assetsDir, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`)
+
+          const updater = {
+            windows: findUpdater("windows", ".exe"),
+            linux: findUpdater("linux", ".appimage"),
+            macos: findUpdater("macos", ".app.tar.gz"),
+          };
+
+          function architecture(filename) {
+            const name = filename.toLowerCase();
+
+            if (
+              name.includes("aarch64") ||
+              name.includes("arm64")
+            ) {
+              return "aarch64";
+            }
+
+            return "x86_64";
+          }
+
+          const platforms = {};
+
+          for (const [platform, data] of Object.entries(updater)) {
+            const filename = path.basename(data.file);
+
+            const target =
+              platform === "macos"
+                ? "darwin"
+                : platform;
+
+            platforms[`${target}-${architecture(filename)}`] = {
+              signature: fs
+                .readFileSync(data.signature, "utf8")
+                .trim(),
+              url:
+                `https://github.com/${process.env.RELEASE_REPOSITORY}` +
+                `/releases/download/${process.env.RELEASE_TAG}/${filename}`,
+            };
+          }
+
+          const latest = {
+            version: process.env.RELEASE_TAG.replace(/^v/, ""),
+            notes: "",
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+
+          fs.writeFileSync(
+            path.join(output, "latest.json"),
+            JSON.stringify(latest, null, 2) + "\n"
+          );
+
+          console.log("");
+          console.log("Release assets:");
+
+          for (const filename of [...copied].sort()) {
+            console.log(`  ${filename}`);
+          }
+
+          console.log("");
+          console.log("latest.json generated successfully.");
           NODE
 
           test -s release-assets/latest.json
 
-      - name: Create or update destination release
+      - name: Validate latest.json
         shell: bash
         run: |
           set -euo pipefail
-          release_args=(--repo "$RELEASE_REPOSITORY" --title "Aqua Client ${RELEASE_TAG}")
-          if [[ "$RELEASE_TAG" == *-* ]]; then
-            release_args+=(--prerelease)
-          else
-            release_args+=(--latest)
-          fi
 
-          if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" "${release_args[@]}"
-          else
-            gh release create "$RELEASE_TAG" "${release_args[@]}" --generate-notes
-          fi
+          node <<'NODE'
+          const fs = require("node:fs");
 
-      - name: Upload destination release assets
+          const data = JSON.parse(
+            fs.readFileSync("release-assets/latest.json", "utf8")
+          );
+
+          if (!data.version) throw new Error("latest.json has no version.");
+          if (!data.platforms) throw new Error("latest.json has no platforms.");
+
+          for (const target of [
+            "windows-x86_64",
+            "linux-x86_64",
+            "darwin-x86_64"
+          ]) {
+            const entry = data.platforms[target];
+
+            if (!entry) {
+              throw new Error(`Missing platform: ${target}`);
+            }
+
+            if (!entry.url) {
+              throw new Error(`Missing URL: ${target}`);
+            }
+
+            if (!entry.signature) {
+              throw new Error(`Missing signature: ${target}`);
+            }
+          }
+
+          console.log("latest.json validation passed.");
+          NODE
+
+      - name: Create or update GitHub release
         shell: bash
         run: |
           set -euo pipefail
-          gh release upload "$RELEASE_TAG" release-assets/* --repo "$RELEASE_REPOSITORY" --clobber
+
+          if gh release view "$RELEASE_TAG" \
+            --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+
+            gh release edit "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "Aqua Client ${RELEASE_TAG}" \
+              --latest
+
+          else
+
+            gh release create "$RELEASE_TAG" \
+              --repo "$RELEASE_REPOSITORY" \
+              --title "Aqua Client ${RELEASE_TAG}" \
+              --generate-notes \
+              --latest
+
+          fi
+
+      - name: Upload release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release upload \
+            "$RELEASE_TAG" \
+            release-assets/* \
+            --repo "$RELEASE_REPOSITORY" \
+            --clobber
+
+      - name: Verify published release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh release view "$RELEASE_TAG" \
+            --repo "$RELEASE_REPOSITORY"
+
+          echo ""
+          echo "Aqua Client ${RELEASE_TAG} published successfully."
+
