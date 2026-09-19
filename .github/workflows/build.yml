@@ -68,17 +68,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          find src-tauri/target/release/bundle -type f -print | sort
+          find src-tauri/target/release/bundle -type f \( \
+            -iname '*.exe' -o \
+            -iname '*.exe.sig' -o \
+            -iname '*.AppImage' -o \
+            -iname '*.AppImage.sig' -o \
+            -iname '*.deb' -o \
+            -iname '*.deb.sig' -o \
+            -iname '*.dmg' -o \
+            -iname '*.dmg.sig' -o \
+            -iname '*.app.tar.gz' -o \
+            -iname '*.app.tar.gz.sig' \
+          \) ! -path '*AppDir*' ! -path '*debian*' ! -path '*DEBIAN*' -print | sort
 
           case "${{ matrix.platform }}" in
             windows)
-              find src-tauri/target/release/bundle -type f -iname '*.nsis.zip' -print -quit | grep -q .
+              find src-tauri/target/release/bundle -type f -iname '*.exe' -print -quit | grep -q .
+              find src-tauri/target/release/bundle -type f -iname '*.exe.sig' -print -quit | grep -q .
               ;;
             linux)
-              find src-tauri/target/release/bundle -type f -iname '*.appimage.tar.gz' -print -quit | grep -q .
+              find src-tauri/target/release/bundle -type f -iname '*.AppImage' -print -quit | grep -q .
+              find src-tauri/target/release/bundle -type f -iname '*.AppImage.sig' -print -quit | grep -q .
               ;;
             macos)
               find src-tauri/target/release/bundle -type f -iname '*.app.tar.gz' -print -quit | grep -q .
+              find src-tauri/target/release/bundle -type f -iname '*.app.tar.gz.sig' -print -quit | grep -q .
               ;;
           esac
 
@@ -128,21 +142,6 @@ jobs:
             fi
           done
 
-          echo 'Generated files received from the matrix jobs:'
-          find staging -type f -print | sort
-
-          find staging -type f \( \
-            -iname '*.exe' -o \
-            -iname '*.msi' -o \
-            -iname '*.nsis.zip' -o \
-            -iname '*.appimage' -o \
-            -iname '*.appimage.tar.gz' -o \
-            -iname '*.deb' -o \
-            -iname '*.dmg' -o \
-            -iname '*.app.tar.gz' -o \
-            -iname '*.sig' \
-          \) -exec cp {} release-assets/ \;
-
           RELEASE_ASSETS_DIR="$PWD/release-assets" node <<'NODE'
           const fs = require('node:fs')
           const path = require('node:path')
@@ -159,39 +158,78 @@ jobs:
             })
           }
 
-          const updaterArtifacts = walk(staging).filter((file) => {
-            const name = path.basename(file).toLowerCase()
-            return name.endsWith('.nsis.zip') || name.endsWith('.appimage.tar.gz') || name.endsWith('.app.tar.gz')
-          })
-          if (!updaterArtifacts.length) throw new Error('No signed Tauri updater artifacts were generated.')
+          function platformFor(file) {
+            const directory = file.split(path.sep).find((segment) => segment.startsWith('aqua-'))
+            if (!directory) throw new Error(`Unable to determine matrix platform for ${file}.`)
+            return directory.replace(/^aqua-/, '')
+          }
 
-          const platforms = {}
-          for (const artifactPath of updaterArtifacts) {
-            const filename = path.basename(artifactPath)
-            const signaturePath = path.join(path.dirname(artifactPath), `${filename}.sig`)
-            if (!fs.existsSync(signaturePath)) throw new Error(`Missing Tauri signature for ${filename}.`)
-            const platformDirectory = artifactPath.split(path.sep).find((segment) => segment.startsWith('aqua-'))
-            if (!platformDirectory) throw new Error(`Unable to determine matrix platform for ${filename}.`)
-            const os = platformDirectory === 'aqua-macos' ? 'darwin' : platformDirectory.replace(/^aqua-/, '')
-            const arch = /(?:aarch64|arm64)/i.test(filename) ? 'aarch64' : 'x86_64'
-            const key = `${os}-${arch}`
-            if (platforms[key]) continue
-            platforms[key] = {
-              signature: fs.readFileSync(signaturePath, 'utf8').trim(),
-              url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
+          function isInternalFile(file) {
+            return file.split(path.sep).some((segment) => {
+              const lower = segment.toLowerCase()
+              return lower.endsWith('appdir') || lower === 'debian'
+            })
+          }
+
+          function isBundleFile(file) {
+            if (isInternalFile(file)) return false
+            const name = path.basename(file).toLowerCase()
+            return name.endsWith('.exe') || name.endsWith('.appimage') || name.endsWith('.deb') || name.endsWith('.dmg') || name.endsWith('.app.tar.gz')
+          }
+
+          const bundleFiles = walk(staging).filter(isBundleFile)
+          if (!bundleFiles.length) throw new Error('No distributable Tauri bundle files were generated.')
+
+          const copied = new Set()
+          for (const bundlePath of bundleFiles) {
+            const filename = path.basename(bundlePath)
+            if (copied.has(filename)) throw new Error(`Duplicate release asset filename: ${filename}`)
+            copied.add(filename)
+            fs.copyFileSync(bundlePath, path.join(assetsDir, filename))
+
+            const signaturePath = `${bundlePath}.sig`
+            if (fs.existsSync(signaturePath)) {
+              const signatureFilename = `${filename}.sig`
+              if (copied.has(signatureFilename)) throw new Error(`Duplicate release asset filename: ${signatureFilename}`)
+              copied.add(signatureFilename)
+              fs.copyFileSync(signaturePath, path.join(assetsDir, signatureFilename))
             }
           }
 
-          if (!Object.keys(platforms).length) throw new Error('No platform entries could be created from signed Tauri artifacts.')
+          console.log('Generated distributable bundle files:')
+          for (const filename of [...copied].sort()) console.log(`- ${filename}`)
+
+          function selectUpdaterArtifact(platform, suffix) {
+            const candidates = bundleFiles.filter((file) => platformFor(file) === platform && path.basename(file).toLowerCase().endsWith(suffix))
+            if (!candidates.length) throw new Error(`Missing ${platform} updater artifact matching ${suffix}.`)
+            const selected = candidates.find((file) => path.basename(file).toLowerCase().includes('setup')) ?? candidates[0]
+            const signaturePath = `${selected}.sig`
+            if (!fs.existsSync(signaturePath)) throw new Error(`Missing signature for updater artifact ${path.basename(selected)}.`)
+            return { file: selected, signaturePath }
+          }
+
+          const updaterArtifacts = {
+            windows: selectUpdaterArtifact('windows', '.exe'),
+            linux: selectUpdaterArtifact('linux', '.appimage'),
+            macos: selectUpdaterArtifact('macos', '.app.tar.gz'),
+          }
+
+          const platforms = {}
+          for (const [platform, updater] of Object.entries(updaterArtifacts)) {
+            const filename = path.basename(updater.file)
+            const os = platform === 'macos' ? 'darwin' : platform
+            const arch = /(?:aarch64|arm64)/i.test(filename) ? 'aarch64' : 'x86_64'
+            platforms[`${os}-${arch}`] = {
+              signature: fs.readFileSync(updater.signaturePath, 'utf8').trim(),
+              url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
+            }
+          }
           const version = tag.replace(/^v/, '')
           const latest = { version, notes: '', pub_date: new Date().toISOString(), platforms }
           fs.writeFileSync(path.join(assetsDir, 'latest.json'), `${JSON.stringify(latest, null, 2)}\n`)
           NODE
 
           test -s release-assets/latest.json
-          test -n "$(find staging/aqua-windows -type f -iname '*.sig' -print -quit)"
-          test -n "$(find staging/aqua-linux -type f -iname '*.sig' -print -quit)"
-          test -n "$(find staging/aqua-macos -type f -iname '*.sig' -print -quit)"
 
       - name: Create or update destination release
         shell: bash
