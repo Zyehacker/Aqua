@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   release:
@@ -71,3 +71,118 @@ jobs:
           path: src-tauri/target/release/bundle/**
           if-no-files-found: error
           retention-days: 7
+
+  publish:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.AQUA_RELEASES_TOKEN }}
+      RELEASE_REPOSITORY: Zyehacker/Aqua-Client-Releases
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Require destination repository token
+        shell: bash
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "AQUA_RELEASES_TOKEN is required to publish to ${RELEASE_REPOSITORY}."
+            exit 1
+          fi
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: aqua-*
+          path: staging
+          merge-multiple: false
+
+      - name: Collect release assets and build updater metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          for platform in windows linux macos; do
+            if [[ ! -d "staging/aqua-${platform}" ]]; then
+              echo "Missing aqua-${platform} matrix artifact."
+              exit 1
+            fi
+          done
+
+          find staging -type f \( \
+            -iname '*.exe' -o \
+            -iname '*.msi' -o \
+            -iname '*.appimage' -o \
+            -iname '*.deb' -o \
+            -iname '*.dmg' -o \
+            -iname '*.sig' \
+          \) -exec cp {} release-assets/ \;
+
+          RELEASE_ASSETS_DIR="$PWD/release-assets" node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+
+          const staging = path.resolve('staging')
+          const assetsDir = process.env.RELEASE_ASSETS_DIR
+          const repository = process.env.RELEASE_REPOSITORY
+          const tag = process.env.RELEASE_TAG
+
+          function walk(directory) {
+            return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+              const fullPath = path.join(directory, entry.name)
+              return entry.isDirectory() ? walk(fullPath) : [fullPath]
+            })
+          }
+
+          const manifests = walk(staging).filter((file) => path.basename(file) === 'latest.json')
+          if (!manifests.length) throw new Error('No Tauri latest.json metadata was generated.')
+
+          const merged = JSON.parse(fs.readFileSync(manifests[0], 'utf8'))
+          merged.platforms = {}
+
+          for (const manifestPath of manifests) {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+            for (const [platform, update] of Object.entries(manifest.platforms ?? {})) {
+              const filename = path.basename(new URL(update.url).pathname)
+              if (!fs.existsSync(path.join(assetsDir, filename))) {
+                throw new Error(`Updater asset ${filename} for ${platform} was not collected.`)
+              }
+              merged.platforms[platform] = {
+                ...update,
+                url: `https://github.com/${repository}/releases/download/${tag}/${filename}`,
+              }
+            }
+          }
+
+          if (!Object.keys(merged.platforms).length) throw new Error('Tauri latest.json contained no platform entries.')
+          fs.writeFileSync(path.join(assetsDir, 'latest.json'), `${JSON.stringify(merged, null, 2)}\n`)
+          NODE
+
+          test -s release-assets/latest.json
+          test -n "$(find staging/aqua-windows -type f -iname '*.sig' -print -quit)"
+          test -n "$(find staging/aqua-linux -type f -iname '*.sig' -print -quit)"
+          test -n "$(find staging/aqua-macos -type f -iname '*.sig' -print -quit)"
+
+      - name: Create or update destination release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_args=(--repo "$RELEASE_REPOSITORY" --title "Aqua Client ${RELEASE_TAG}")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            release_args+=(--prerelease)
+          else
+            release_args+=(--latest)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" "${release_args[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${release_args[@]}" --generate-notes
+          fi
+
+      - name: Upload destination release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" release-assets/* --repo "$RELEASE_REPOSITORY" --clobber
