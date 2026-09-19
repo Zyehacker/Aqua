@@ -64,6 +64,24 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
+      - name: Inspect generated bundle files
+        shell: bash
+        run: |
+          set -euo pipefail
+          find src-tauri/target/release/bundle -type f -print | sort
+
+          case "${{ matrix.platform }}" in
+            windows)
+              find src-tauri/target/release/bundle -type f -iname '*.nsis.zip' -print -quit | grep -q .
+              ;;
+            linux)
+              find src-tauri/target/release/bundle -type f -iname '*.appimage.tar.gz' -print -quit | grep -q .
+              ;;
+            macos)
+              find src-tauri/target/release/bundle -type f -iname '*.app.tar.gz' -print -quit | grep -q .
+              ;;
+          esac
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -109,6 +127,9 @@ jobs:
               exit 1
             fi
           done
+
+          echo 'Generated files received from the matrix jobs:'
+          find staging -type f -print | sort
 
           find staging -type f \( \
             -iname '*.exe' -o \

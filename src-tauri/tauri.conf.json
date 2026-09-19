@@ -45,6 +45,7 @@
       "nsis",
       "appimage",
       "deb",
+      "app",
       "dmg"
     ],
     "icon": [
