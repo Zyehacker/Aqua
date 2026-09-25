@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'motion/react'
 import { Eye, EyeOff, ImagePlus, LoaderCircle, LogOut, ShieldCheck, X } from 'lucide-react'
 import Button from '../ui/Button'
+import Avatar from '../ui/Avatar'
 import { useToast } from '../../hooks/useToast'
 import { useAquaAuth } from '../../hooks/useAquaAuthHook'
+import { MOTION } from '../../lib/motion'
 import { checkUsernameAvailable, uploadAquaAvatar, validateAquaUsername } from '../../services/aquaSocialService'
 import { appActions, useAppStore } from '../../stores/appStore'
 import { useMaintenance } from '../../hooks/useMaintenanceHook'
@@ -220,7 +222,7 @@ export default function AccountOverlay() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.18 }}
+          transition={MOTION.micro}
         >
           <button type="button" className="account-overlay__backdrop" aria-label="Close Aqua Account" onClick={closeAndReset} />
           <motion.section
@@ -228,7 +230,7 @@ export default function AccountOverlay() {
             initial={{ opacity: 0, x: 24 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 24 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            transition={MOTION.drawer}
           >
             <div className="account-overlay__head">
               <div className="account-overlay__brand">
@@ -269,7 +271,7 @@ export default function AccountOverlay() {
               </section>
             ) : aqua.isSignedIn && aqua.profile ? (
               <section className="aqua-account-window__profile">
-                <div className="aqua-account-window__avatar">{avatarPreview || aqua.profile.avatar_url ? <img src={avatarPreview || aqua.profile.avatar_url || ''} alt="" /> : (aqua.profile.display_name || aqua.profile.username || 'A').slice(0, 1).toUpperCase()}</div>
+                <div className="aqua-account-window__avatar">{avatarPreview ? <img src={avatarPreview} alt="" /> : <Avatar src={aqua.profile.avatar_url} label={aqua.profile.display_name || aqua.profile.username} size="lg" />}</div>
                 <label className="aqua-avatar-upload"><ImagePlus size={14} /><span>{avatarBusy ? `Uploading ${avatarProgress}%` : 'Change avatar'}</span><input type="file" accept="image/png,image/jpeg,image/webp" disabled={avatarBusy} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadAvatar(file); event.currentTarget.value = '' }} /></label>
                 {avatarError ? <p className="aqua-account-error" role="alert">{avatarError}</p> : null}
                 <strong>{aqua.profile.display_name || 'Aqua profile'}</strong>
@@ -286,8 +288,8 @@ export default function AccountOverlay() {
             ) : (
               <section className="aqua-account-window__form">
                 <div className="aqua-account-window__tabs">
-                  <button type="button" className={mode === 'signin' ? 'active' : ''} onClick={() => { setMode('signin'); setFormError(null); aqua.clearError() }}>Sign in</button>
-                  <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setFormError(null); aqua.clearError() }}>Create account</button>
+                  <button type="button" className={mode === 'signin' ? 'active' : ''} onClick={() => { setMode('signin'); setFormError(null); aqua.clearError() }}>Sign in{mode === 'signin' ? <motion.span className="account-tab-indicator" layoutId="account-tab-indicator" transition={MOTION.spring} /> : null}</button>
+                  <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => { setMode('signup'); setFormError(null); aqua.clearError() }}>Create account{mode === 'signup' ? <motion.span className="account-tab-indicator" layoutId="account-tab-indicator" transition={MOTION.spring} /> : null}</button>
                 </div>
                 {mode === 'signup' ? <>
                   <label className="aqua-account-field"><span>Username</span><input value={username} onChange={(event) => {

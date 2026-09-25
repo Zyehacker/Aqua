@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
 import { Check, ChevronDown, LoaderCircle, Plus, UserRound } from 'lucide-react'
 import { appActions } from '../../stores/appStore'
 import { cn } from '../../utils/cn'
@@ -7,6 +6,8 @@ import { getAccount, getAccountTextures, listen, listAccounts, switchAccount, ty
 import { renderSkinHead } from '../../utils/skinHead'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { useAquaAuth } from '../../hooks/useAquaAuthHook'
+import AnimatedDropdown from '../motion/AnimatedDropdown'
+import { useMaintenance } from '../../hooks/useMaintenanceHook'
 
 type AccountInfo = Pick<MsaAccount, 'username' | 'uuid'> & { authenticated: boolean }
 
@@ -18,6 +19,7 @@ type AccountInfo = Pick<MsaAccount, 'username' | 'uuid'> & { authenticated: bool
 export default function AccountSwitcher() {
   const { settings, updateSettings } = useLauncherData()
   const aqua = useAquaAuth()
+  const maintenance = useMaintenance()
 
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -148,22 +150,13 @@ export default function AccountSwitcher() {
         <ChevronDown size={12} className="top-nav__chevron" style={open ? { transform: 'rotate(180deg)' } : undefined} />
       </button>
 
-      <AnimatePresence>
-        {open ? (
-          <motion.div
-            className="acct-menu"
-            role="menu"
-            aria-label="Accounts"
-            initial={{ opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-          >
+      <AnimatedDropdown open={open} className="acct-menu">
+          <div role="menu" aria-label="Accounts">
             {/* Aqua */}
             <div className="acct-menu__group">
               <span className="acct-menu__label">Aqua</span>
               {aquaSignedIn ? (
-                <button type="button" role="menuitem" className="acct-item" onClick={() => { setOpen(false); appActions.toggleAccount() }}>
+                <button type="button" role="menuitem" className="acct-item acct-item--disabled" disabled={maintenance.restricted} title={maintenance.restricted ? 'Aqua Account is unavailable during maintenance.' : undefined} onClick={() => { setOpen(false); appActions.toggleAccount() }}>
                   <span className="acct-item__avatar acct-item__avatar--aqua">
                     {aqua.profile?.avatar_url
                       ? <img src={aqua.profile.avatar_url} alt="" />
@@ -171,15 +164,15 @@ export default function AccountSwitcher() {
                   </span>
                   <span className="acct-item__body">
                     <strong>{aqua.profile?.display_name || aqua.profile?.username}</strong>
-                    <span>@{aqua.profile?.username || 'manage'} · manage</span>
+                    <span>{maintenance.restricted ? 'Unavailable during maintenance' : `@${aqua.profile?.username || 'manage'} · manage`}</span>
                   </span>
                   {/* Aqua is the trigger only when neither Offline nor Microsoft owns the active slot. */}
                   {!offlineMode && !account ? <Check size={14} className="acct-item__check" aria-hidden="true" /> : null}
                 </button>
               ) : (
-                <button type="button" role="menuitem" className="acct-item" onClick={() => { setOpen(false); appActions.toggleAccount() }}>
+                <button type="button" role="menuitem" className="acct-item acct-item--disabled" disabled={maintenance.restricted} title={maintenance.restricted ? 'Aqua Account is unavailable during maintenance.' : undefined} onClick={() => { setOpen(false); appActions.toggleAccount() }}>
                   <span className="acct-item__avatar acct-item__avatar--aqua"><UserRound size={14} /></span>
-                  <span className="acct-item__body"><strong>Sign in to Aqua</strong><span>Friends and profile features</span></span>
+                  <span className="acct-item__body"><strong>Sign in to Aqua</strong><span>{maintenance.restricted ? 'Unavailable during maintenance' : 'Friends and profile features'}</span></span>
                 </button>
               )}
             </div>
@@ -237,13 +230,12 @@ export default function AccountSwitcher() {
               )}
             </div>
 
-            <button type="button" role="menuitem" className="acct-menu__add" onClick={() => { setOpen(false); appActions.toggleAccount() }}>
+            <button type="button" role="menuitem" className="acct-menu__add acct-item--disabled" disabled={maintenance.restricted} title={maintenance.restricted ? 'Aqua Account is unavailable during maintenance.' : undefined} onClick={() => { setOpen(false); appActions.toggleAccount() }}>
               <Plus size={14} />
-              Add account
+              {maintenance.restricted ? 'Aqua Account unavailable' : 'Add account'}
             </button>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+          </div>
+      </AnimatedDropdown>
     </div>
   )
 }

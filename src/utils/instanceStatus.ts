@@ -2,11 +2,13 @@ import type { BackendInstance } from './tauri'
 
 export function instanceStatus(instance: BackendInstance) {
   const state = instance.install_state?.trim().toLowerCase() ?? ''
-  if (state === 'installed' || state === 'ready') return 'Ready'
   if (state.includes('download')) return 'Downloading'
+  if (state.includes('updat')) return 'Updating'
   if (state.includes('install')) return 'Installing'
   if (state.includes('validat')) return 'Validating'
   if (state.includes('fail') || state.includes('error')) return 'Failed'
+  if (state === 'installed' || state === 'ready') return 'Ready'
+  if (instance.installed_version_id?.trim() || instance.game_dir?.trim()) return 'Ready'
   return 'Not installed'
 }
 

@@ -5,8 +5,8 @@ import { LauncherDataContext } from './launcherDataContext'
 const DEFAULT_SETTINGS: tauri.LauncherSettings = {
   language: 'en',
   username: 'Player', version: '', loader_type: 'vanilla', fabric_loader_version: null,
-  java_path: null, java_runtime: null, mc_dir: null, instance_id: null, offline_mode: false, offline_profile_name: 'Aqua Player', offline_profiles: [{ id: 'default-offline', name: 'Aqua Player' }], active_offline_profile_id: 'default-offline', confirm_before_launch: false, resolution_width: 854, resolution_height: 480, fullscreen: false, ram_mb: 2048,
-  jvm_args: '', show_snapshots: false, minimize_on_launch: true,
+  java_path: null, java_runtime: null, mc_dir: null, instance_id: null, offline_mode: false, offline_profile_name: 'Aqua_Player', offline_profiles: [{ id: 'default-offline', name: 'Aqua_Player' }], active_offline_profile_id: 'default-offline', confirm_before_launch: false, resolution_width: 854, resolution_height: 480, fullscreen: false, ram_mb: 2048,
+  jvm_args: '', show_snapshots: false, minimize_on_launch: true, quick_startup: true,
   performance_profile: 'balanced',
 }
 
@@ -20,6 +20,7 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [processRunning, setProcessRunning] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true); setError(null)
@@ -103,6 +104,7 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
     let active = true
     let unsubscribe: (() => void) | null = null
     const reconnect = () => {
+      if (document.hidden) return
       if (active) void tauri.startRichPresence().then(() => tauri.setIdlePresence()).catch(() => undefined)
     }
     void tauri.listen<{ message?: string }>('richpresence-unavailable', (event) => {
@@ -116,6 +118,17 @@ export function LauncherDataProvider({ children }: { children: ReactNode }) {
     return () => { active = false; unsubscribe?.(); window.clearInterval(timer) }
   }, [loading])
 
-  const value = useMemo(() => ({ settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava }), [settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava])
+  useEffect(() => {
+    let active = true
+    const poll = () => {
+      if (document.hidden) return
+      void tauri.isMinecraftRunning().then((running) => { if (active) setProcessRunning(running) }).catch(() => undefined)
+    }
+    poll()
+    const timer = window.setInterval(poll, 2000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [])
+
+  const value = useMemo(() => ({ settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, processRunning, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava }), [settings, instances, versions, jvm, javaPath, javaRuntimes, loading, error, busy, processRunning, activeInstanceId, activeInstance, refresh, updateSettings, selectInstance, detectJava])
   return <LauncherDataContext.Provider value={value}>{children}</LauncherDataContext.Provider>
 }

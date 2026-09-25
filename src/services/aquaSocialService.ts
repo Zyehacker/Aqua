@@ -56,7 +56,36 @@ export type AquaSocialData = {
   outgoing: FriendRequest[]
 }
 
+export type DirectMessage = {
+  id: string
+  conversation_id: string
+  sender_id: string
+  body: string
+  created_at: string
+  pending?: boolean
+  failed?: boolean
+}
+
+export type DirectConversation = { id: string; created_at: string }
+
+const SAFE_SOCIAL_ERROR = 'Aqua social services are temporarily unavailable. Please try again.'
+
+export function safeSocialError(reason: unknown, fallback = SAFE_SOCIAL_ERROR) {
+  if (import.meta.env.DEV) console.error('[aquaSocialService]', reason)
+  return fallback
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function requireId(value: unknown, label: string) {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim()) throw new Error(`Invalid ${label} response.`)
+  return value
+}
+
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024
+const AVATAR_VERIFY_TIMEOUT_MS = 15_000
 
 function loadImage(file: File) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
@@ -72,6 +101,11 @@ async function prepareAvatar(file: File) {
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('Avatar must be a PNG, JPEG, or WebP image.')
   if (file.size > MAX_AVATAR_BYTES) throw new Error('Avatar files must be 5 MB or smaller.')
   const image = await loadImage(file)
+  if (!Number.isFinite(image.naturalWidth) || !Number.isFinite(image.naturalHeight) || image.naturalWidth < 64 || image.naturalHeight < 64 || image.naturalWidth > 4096 || image.naturalHeight > 4096) {
+    throw new Error('Avatar images must be between 64 and 4096 pixels wide and high.')
+  }
+  const aspectRatio = image.naturalWidth / image.naturalHeight
+  if (aspectRatio < 0.5 || aspectRatio > 2) throw new Error('Avatar images must use a reasonable portrait or landscape ratio.')
   const canvas = document.createElement('canvas')
   canvas.width = 512; canvas.height = 512
   const context = canvas.getContext('2d')
@@ -106,11 +140,19 @@ export async function uploadAquaAvatar(userId: string, file: File, onProgress?: 
   console.info('[aquaSocialService] Calling avatar moderation function:', moderationUrl, { path, hasAccessToken: Boolean(accessToken) })
   let moderation: { allowed?: boolean; [key: string]: unknown }
   try {
-    const response = await fetch(moderationUrl, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
-    })
+    let response: Response | null = null
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), AVATAR_VERIFY_TIMEOUT_MS)
+      try {
+        response = await fetch(moderationUrl, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ path }), signal: controller.signal })
+        if (response.ok || response.status < 500) break
+      } catch (reason) { lastError = reason }
+      finally { window.clearTimeout(timer) }
+      await new Promise((resolve) => window.setTimeout(resolve, 350 * (attempt + 1)))
+    }
+    if (!response) throw lastError instanceof Error ? lastError : new Error('Avatar verification timed out')
     const responseText = await response.text()
     let responseData: unknown = null
     try { responseData = responseText ? JSON.parse(responseText) : null } catch { responseData = null }
@@ -129,8 +171,9 @@ export async function uploadAquaAvatar(userId: string, file: File, onProgress?: 
     throw new Error("This image couldn't be approved, try another")
   }
   onProgress?.(85)
-  const { data } = client.storage.from('avatars').getPublicUrl(path)
-  const profile = await updateProfile(userId, { avatar_url: `${data.publicUrl}?v=${Date.now()}` })
+  // Keep only the object path in the profile. Avatars are private objects;
+  // the shared Avatar component resolves a short-lived signed URL on demand.
+  const profile = await updateProfile(userId, { avatar_url: path })
   onProgress?.(100)
   return profile
 }
@@ -279,7 +322,7 @@ export async function searchProfiles(userId: string, query: string) {
   const client = requireClient()
   const normalized = query.trim()
   if (!normalized) return []
-  const pattern = `%${normalized.replace(/[%_,]/g, '')}%`
+  const pattern = `%${normalized.replace(/[\\%_,]/g, '')}%`
   const { data, error } = await client
     .from('profiles')
     .select('id, username, display_name, avatar_url, created_at, updated_at')
@@ -356,54 +399,125 @@ export function invalidateSocialData(userId: string) {
   socialCache.delete(userId)
 }
 
-export async function sendFriendRequest(senderId: string, receiverId: string) {
-  if (senderId === receiverId) throw new Error('You cannot send a friend request to yourself.')
+export function subscribeToSocialUpdates(userId: string, onChange: () => void) {
   const client = requireClient()
-  const { data: existingFriendship, error: friendshipError } = await client
-    .from('friendships')
-    .select('id')
-    .or(`and(user_id.eq.${senderId},friend_id.eq.${receiverId}),and(user_id.eq.${receiverId},friend_id.eq.${senderId})`)
-    .maybeSingle()
-  if (friendshipError) throw friendshipError
-  if (existingFriendship) throw new Error('You are already friends.')
+  // A fresh topic is intentional. Supabase does not allow adding `.on()`
+  // handlers after a channel has entered subscribe/joined state, and a fast
+  // route remount can otherwise race the previous removeChannel call.
+  const channel = client.channel(`social:${userId}:${crypto.randomUUID()}`)
+  try {
+    channel
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'friend_requests' }, (payload) => {
+        const row = (payload.new ?? payload.old) as Partial<FriendRequest>
+        if (row.sender_id === userId || row.receiver_id === userId) onChange()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'friendships' }, (payload) => {
+        const row = (payload.new ?? payload.old) as Partial<Friendship>
+        if (row.user_id === userId || row.friend_id === userId) onChange()
+      })
+    channel.subscribe()
+  } catch (error) {
+    logSocialError('social realtime setup', error)
+  }
+  return () => { void client.removeChannel(channel).catch((error) => logSocialError('social realtime cleanup', error)) }
+}
 
-  const { data, error } = await client
-    .from('friend_requests')
-    .insert({ sender_id: senderId, receiver_id: receiverId, status: 'pending' })
-    .select('id, sender_id, receiver_id, status, created_at, updated_at')
-    .single()
-  if (error) throw error
-  invalidateSocialData(senderId)
-  invalidateSocialData(receiverId)
-  return data as FriendRequest
+export async function sendFriendRequest(receiverId: string, legacyReceiverId?: string) {
+  // The first argument is retained temporarily for callers from older UI
+  // bundles; it is never sent to Supabase or used for authorization.
+  const recipientId = legacyReceiverId ?? receiverId
+  const client = requireClient()
+  const { data, error } = await client.rpc('send_friend_request', { p_receiver_id: recipientId })
+  if (error) { console.error('[aquaSocialService] friend request failed:', error); throw new Error(error.message || SAFE_SOCIAL_ERROR) }
+  const { data: session } = await client.auth.getSession()
+  if (session.session?.user.id) invalidateSocialData(session.session.user.id)
+  invalidateSocialData(recipientId)
+  return requireId(data, 'friend request') as unknown as FriendRequest
 }
 
 export async function updateFriendRequest(requestId: string, status: 'accepted' | 'declined' | 'cancelled') {
   const client = requireClient()
   if (status === 'accepted') {
     const { data, error } = await client.rpc('accept_friend_request', { request_id: requestId })
-    if (error) throw error
+    if (error) { console.error('[aquaSocialService] accept friend request failed:', error); throw new Error(error.message || SAFE_SOCIAL_ERROR) }
     socialCache.clear()
     return data
   }
-  const { data, error } = await client
-    .from('friend_requests')
-    .update({ status })
-    .eq('id', requestId)
-    .select('id, sender_id, receiver_id, status, created_at, updated_at')
-    .single()
-  if (error) throw error
+  const { data, error } = await client.rpc('respond_friend_request', { request_id: requestId, next_status: status })
+  if (error) { console.error('[aquaSocialService] update friend request failed:', error); throw new Error(error.message || SAFE_SOCIAL_ERROR) }
   socialCache.clear()
-  return data as FriendRequest
+  return requireId(data, 'friend request') as unknown as FriendRequest
 }
 
 export async function removeFriend(userId: string, friendId: string) {
   const client = requireClient()
-  const { error } = await client
-    .from('friendships')
-    .delete()
-    .or(`and(user_id.eq.${userId},friend_id.eq.${friendId}),and(user_id.eq.${friendId},friend_id.eq.${userId})`)
-  if (error) throw error
+  const { error } = await client.rpc('remove_friend', { p_friend_id: friendId })
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
   invalidateSocialData(userId)
   invalidateSocialData(friendId)
+}
+
+export async function getOrCreateDirectConversation(friendId: string) {
+  const client = requireClient()
+  const { data, error } = await client.rpc('get_or_create_direct_conversation', { p_friend_id: friendId })
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
+  return data as DirectConversation
+}
+
+export async function getDirectMessages(conversationId: string, limit = 100) {
+  const client = requireClient()
+  const { data, error } = await client.from('direct_messages').select('id, conversation_id, sender_id, body, created_at').eq('conversation_id', conversationId).order('created_at', { ascending: false }).limit(limit)
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
+  return ((data ?? []) as DirectMessage[]).reverse()
+}
+
+export async function sendDirectMessage(conversationId: string, body: string) {
+  const client = requireClient()
+  const { data, error } = await client.rpc('send_direct_message', { p_conversation_id: conversationId, p_body: body.trim() })
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
+  return data as DirectMessage
+}
+
+export function directMessageTopic(userId: string, friendId: string) {
+  return `dm:${[userId, friendId].sort().join(':')}`
+}
+
+export async function broadcastDirectMessage(userId: string, friendId: string, message: DirectMessage) {
+  const client = requireClient()
+  const channel = client.channel(`${directMessageTopic(userId, friendId)}:${crypto.randomUUID()}`, { config: { private: true } })
+  try {
+    await channel.subscribe()
+    await channel.send({ type: 'broadcast', event: 'message', payload: message })
+  } finally {
+    await client.removeChannel(channel)
+  }
+}
+
+export async function markDirectMessagesRead(conversationId: string) {
+  const client = requireClient()
+  const { error } = await client.rpc('mark_direct_messages_read', { p_conversation_id: conversationId })
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
+}
+
+export async function getDirectUnreadCount(conversationId: string) {
+  const client = requireClient()
+  const { data, error } = await client.rpc('get_direct_unread_count', { p_conversation_id: conversationId })
+  if (error) throw new Error(error.message || SAFE_SOCIAL_ERROR)
+  return Number(data ?? 0)
+}
+
+export function subscribeToDirectConversation(userId: string, friendId: string, onMessage: (message: DirectMessage) => void, onStatus?: (status: string) => void) {
+  const client = requireClient()
+  const channel = client.channel(`${directMessageTopic(userId, friendId)}:${crypto.randomUUID()}`, { config: { private: true, presence: { key: userId } } })
+  try {
+    channel.on('broadcast', { event: 'message' }, ({ payload }) => onMessage(payload as DirectMessage))
+    channel.subscribe((status) => {
+      onStatus?.(status)
+      if (status === 'SUBSCRIBED') void channel.track({ online_at: new Date().toISOString() })
+    })
+  } catch (error) {
+    logSocialError('direct realtime setup', error)
+    onStatus?.('CHANNEL_ERROR')
+  }
+  return () => { void client.removeChannel(channel).catch((error) => logSocialError('direct realtime cleanup', error)) }
 }

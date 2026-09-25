@@ -1,5 +1,6 @@
 import { Outlet, useLocation } from 'react-router-dom'
 import { Suspense, useEffect } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import { Coffee } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import TopNav from '../components/layout/TopNav'
@@ -11,7 +12,18 @@ import { EXTERNAL_LINKS } from '../config/externalLinks'
 import { useLauncherData } from '../hooks/useLauncherDataHook'
 import AccountOverlay from '../components/account/AccountOverlay'
 import MaintenanceBanner from '../components/maintenance/MaintenanceBanner'
+import MaintenanceModal from '../components/maintenance/MaintenanceModal'
 import UpdateModal from '../components/updater/UpdateModal'
+import CompactSidebar from '../components/layout/CompactSidebar'
+import { useAppStore } from '../stores/appStore'
+import { formatInstanceHeading } from '../utils/instanceDisplay'
+import { PageTransition } from '../components/motion'
+import AnimatedIconButton from '../components/motion/AnimatedIconButton'
+import { aquaMotion } from '../lib/motion'
+import InstanceContextBar from '../components/launcher/InstanceContextBar'
+import SupportPopup from '../components/support/SupportPopup'
+import ErrorBoundary from '../components/ErrorBoundary'
+import ContextMenu from '../components/ui/ContextMenu'
 
 function DiscordIcon() {
   return (
@@ -27,7 +39,9 @@ function DiscordIcon() {
 export default function MainLayout() {
   const location = useLocation()
   const toast = useToast()
-  const { activeInstance, busy } = useLauncherData()
+  const { activeInstance, busy, loading, error, processRunning } = useLauncherData()
+  const layoutMode = useAppStore((s) => s.layoutMode)
+  const showQuickInstanceBar = useAppStore((s) => s.showQuickInstanceBar)
 
   useEffect(() => {
     appActions.closeOverlays()
@@ -43,47 +57,55 @@ export default function MainLayout() {
   }
 
   return (
-    <div className="app-shell">
-      <AppBackground />
-      <TopNav />
+    <div className={`app-shell ${location.pathname === '/' ? 'app-shell--home' : 'app-shell--surface'} ${layoutMode === 'sidebar' ? 'app-shell--sidebar' : ''}`}>
+      <AppBackground home={location.pathname === '/'} />
+      <AnimatePresence initial={false} mode="wait">
+        {layoutMode === 'top' ? <motion.div key="top-nav" className="layout-nav-transition" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={aquaMotion.micro}><TopNav /></motion.div> : <motion.div key="compact-sidebar" className="layout-nav-transition" initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }} transition={aquaMotion.micro}><CompactSidebar /></motion.div>}
+      </AnimatePresence>
       <MaintenanceBanner />
-      <div className="app-shell__body">
+      <MaintenanceModal />
+      {showQuickInstanceBar && location.pathname !== '/' ? <InstanceContextBar /> : null}
+      <main className="app-shell__body" role="main">
         <div className="app-shell__content">
-          <div key={location.pathname} style={{ minHeight: '100%' }}>
-            <Suspense fallback={<PageSkeleton />}>
-              <Outlet />
-            </Suspense>
-          </div>
+          <PageTransition routeKey={location.pathname}>
+            <ErrorBoundary resetKey={location.pathname}>
+              <Suspense key={location.pathname} fallback={<PageSkeleton />}>
+                <Outlet />
+              </Suspense>
+            </ErrorBoundary>
+          </PageTransition>
         </div>
-      </div>
+      </main>
 
       <div className="bottom-utility-bar" aria-label="Launcher status">
         <span className="bottom-utility-bar__dot" />
-        <span>{busy ? busy.replace(/^./, (value) => value.toUpperCase()) : 'Ready'}</span>
-        {activeInstance ? <span className="bottom-utility-bar__instance">{activeInstance.name} · {activeInstance.mc_version}</span> : <span className="bottom-utility-bar__instance">No instance selected</span>}
+        <span>{busy ? busy.replace(/^./, (value) => value.toUpperCase()) : loading ? 'Loading' : error ? 'Unavailable' : processRunning ? 'Minecraft running' : 'Ready'}</span>
+        {activeInstance ? <span className="bottom-utility-bar__instance">{formatInstanceHeading(activeInstance)}</span> : <span className="bottom-utility-bar__instance">No instance selected</span>}
       </div>
 
       <div className="social-float" aria-label="Community links">
-        <button
+        <AnimatedIconButton
           type="button"
           className="social-float__button social-float__button--discord"
           aria-label="Join the Discord community"
           onClick={() => { void handleExternalLink(EXTERNAL_LINKS.discord) }}
         >
           <DiscordIcon />
-        </button>
-        <button
+        </AnimatedIconButton>
+        <AnimatedIconButton
           type="button"
           className="social-float__button social-float__button--kofi"
           aria-label="Support on Ko-fi"
           onClick={() => { void handleExternalLink(EXTERNAL_LINKS.kofi) }}
         >
           <Coffee size={18} />
-        </button>
+        </AnimatedIconButton>
       </div>
 
       <AccountOverlay />
       <UpdateModal />
+      <SupportPopup />
+      <ContextMenu />
     </div>
   )
 }

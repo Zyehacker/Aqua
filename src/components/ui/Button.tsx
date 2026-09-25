@@ -1,16 +1,17 @@
-import { motion, type HTMLMotionProps } from 'framer-motion'
-import { type ReactNode, memo } from 'react'
+import { type ComponentPropsWithoutRef, type ReactNode, memo } from 'react'
 import { cn } from '../../utils/cn'
 import { playUiSound, type UiSoundTone } from '../../utils/uiSound'
+import AnimatedButton from '../motion/AnimatedButton'
 
 type Variant = 'primary' | 'aqua' | 'ghost' | 'danger'
 
-type ButtonProps = Omit<HTMLMotionProps<'button'>, 'children'> & {
+type ButtonProps = Omit<ComponentPropsWithoutRef<'button'>, 'children' | 'onAnimationStart' | 'onAnimationEnd' | 'onDrag' | 'onDragStart' | 'onDragEnd'> & {
   variant?: Variant
   size?: 'lg' | 'md' | 'sm' | 'icon'
   block?: boolean
   children: ReactNode
   sound?: UiSoundTone
+  loading?: boolean
 }
 
 const variantClass: Record<Variant, string> = {
@@ -27,16 +28,16 @@ function Button({
   className,
   children,
   sound,
+  loading = false,
   onClick,
   ...rest
 }: ButtonProps) {
   return (
-    <motion.button
-      whileHover={{ y: -2 }}
-      whileTap={{ y: 0, scale: 0.985 }}
-      transition={{ duration: 0.18 }}
+    <AnimatedButton
+      {...rest}
+      loading={loading}
       className={cn(
-        'btn',
+        'btn motion-layer',
         variantClass[variant],
         size === 'sm' && 'btn-sm',
         size === 'icon' && 'btn-icon',
@@ -45,14 +46,13 @@ function Button({
         className,
       )}
       onClick={(event) => { if (sound) playUiSound(sound); onClick?.(event) }}
-      {...rest}
     >
       {typeof children === 'string' ? children : (
         <span className="btn__content">
           {children}
         </span>
       )}
-    </motion.button>
+    </AnimatedButton>
   )
 }
 

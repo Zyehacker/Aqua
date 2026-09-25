@@ -3,6 +3,7 @@ import { CheckCircle2, CircleAlert, LoaderCircle, Mail } from 'lucide-react'
 import Button from '../ui/Button'
 import { useAquaAuth } from '../../hooks/useAquaAuthHook'
 import { getPendingConfirmationEmail, hasAquaAuthCallback, processAquaAuthCallback } from '../../services/aquaAuthService'
+import { useMaintenance } from '../../hooks/useMaintenanceHook'
 
 type CallbackState =
   | { kind: 'loading' }
@@ -12,12 +13,14 @@ type CallbackState =
 
 export default function AuthCallbackGate({ children }: { children: ReactNode }) {
   const aqua = useAquaAuth()
+  const maintenance = useMaintenance()
   const [state, setState] = useState<CallbackState | null>(() => hasAquaAuthCallback() ? { kind: 'loading' } : null)
   const processedRef = useRef(false)
   const [resendState, setResendState] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
   const [cooldown, setCooldown] = useState(0)
 
   useEffect(() => {
+    if (maintenance.restricted) return undefined
     if (processedRef.current) return undefined
     const callback = processAquaAuthCallback()
     if (!callback) return undefined
@@ -33,7 +36,7 @@ export default function AuthCallbackGate({ children }: { children: ReactNode }) 
     }).catch((reason) => {
       setState({ kind: 'error', email: getPendingConfirmationEmail(), message: reason instanceof Error ? reason.message : 'This confirmation link could not be used.' })
     })
-  }, [aqua])
+  }, [aqua, maintenance.restricted])
 
   useEffect(() => {
     if (!cooldown) return undefined
@@ -41,7 +44,7 @@ export default function AuthCallbackGate({ children }: { children: ReactNode }) 
     return () => window.clearInterval(timer)
   }, [cooldown])
 
-  if (!state) return children
+  if (!state || maintenance.restricted) return children
   if (state.kind === 'loading') return <AuthCallbackState icon={<LoaderCircle className="spin" size={22} />} title="Confirming your email" detail="Verifying your Aqua Account with Supabase." />
   if (state.kind === 'success') return <AuthCallbackState icon={<CheckCircle2 size={22} />} title="Email confirmed" detail="Your Aqua Account is ready." action={<Button variant="aqua" onClick={() => window.location.replace('/')}>Continue to Aqua</Button>} />
 

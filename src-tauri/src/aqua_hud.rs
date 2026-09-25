@@ -72,6 +72,10 @@ pub async fn install_aqua_hud(
     mc_version: String,
     mc_dir: Option<String>,
 ) -> Result<AquaHudInstallResult, String> {
+    let settings = crate::settings::get_settings(app.clone());
+    if settings.offline_mode || crate::auth::get_account(app.clone()).await.is_none() {
+        return Err("Aqua HUD requires an authenticated Microsoft Minecraft account. Switch from Offline mode and sign in first.".to_string());
+    }
     let source = source_for(&mc_version).ok_or_else(|| format!("Aqua HUD is not configured for Minecraft {mc_version}."))?;
     let root = mc_dir.map(PathBuf::from).or_else(crate::settings::default_mc_dir).ok_or_else(|| "Could not determine the Minecraft directory.".to_string())?;
     let metadata = crate::mods::read_metadata(&root, &instance_id).ok_or_else(|| format!("Instance metadata not found: {instance_id}"))?;

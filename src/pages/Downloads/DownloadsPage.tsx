@@ -8,6 +8,8 @@ import type { DownloadJob } from '../../types'
 import { invoke, listen } from '../../utils/tauri'
 import { cn } from '../../utils/cn'
 import { useTranslation } from '../../useTranslation'
+import AsyncState from '../../components/ui/AsyncState'
+import { AnimatedContent, TextMorph } from '../../components/motion'
 
 const STATUS_ICON: Record<string, LucideIcon> = {
   downloading: DownloadCloud,
@@ -42,6 +44,8 @@ export default function DownloadsPage() {
   const { t } = useTranslation()
   const toast = useToast()
   const [jobs, setJobs] = useState<DownloadJob[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -49,7 +53,9 @@ export default function DownloadsPage() {
       try {
         const current = await invoke<DownloadJob[]>('list_downloads')
         if (current) setJobs(current)
-      } catch { /* backend may be unavailable */ }
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Unable to load downloads.')
+      } finally { setLoading(false) }
 
       const cleanup = await listen<DownloadJob>('download-status', (job) => {
         setJobs((prev) => {
@@ -72,8 +78,10 @@ export default function DownloadsPage() {
     try {
       const current = await invoke<DownloadJob[]>('list_downloads')
       if (current) setJobs(current)
+      setError(null)
       toast.pushToast(t('downloads.refreshed'), 'success')
-    } catch {
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to refresh downloads.')
       toast.pushToast('Refresh failed', 'error')
     }
   }
@@ -90,13 +98,13 @@ export default function DownloadsPage() {
   const activeCount = jobs.filter((entry) => isActive(entry.status)).length
 
   return (
-    <div className="page page-narrow">
+    <div className="page downloads-page">
       <div className="page-header">
         <div>
           <p className="eyebrow">Transfers</p>
           <h1 className="page-title">{t('downloads.title')}</h1>
           <p className="page-subtitle">
-            {activeCount > 0 ? `${activeCount} active download${activeCount === 1 ? '' : 's'}` : 'Track instance, mod, and pack downloads.'}
+            {activeCount > 0 ? <TextMorph>{`${activeCount} active download${activeCount === 1 ? '' : 's'}`}</TextMorph> : 'Track instance, mod, and pack downloads.'}
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => void refresh()}>
@@ -105,7 +113,7 @@ export default function DownloadsPage() {
         </Button>
       </div>
 
-      {jobs.length === 0 ? (
+      {loading ? <AsyncState state="loading" title="Loading downloads" description="Checking active transfers." /> : error ? <AsyncState state="error" title="Downloads unavailable" description={error} onAction={() => void refresh()} /> : jobs.length === 0 ? (
         <div className="dl-empty">
           <EmptyState
             title={t('downloads.empty')}
@@ -114,7 +122,7 @@ export default function DownloadsPage() {
           />
         </div>
       ) : (
-        <div className="dl-panel">
+        <AnimatedContent contentKey={jobs.map((job) => `${job.id}:${job.status}:${job.percentage ?? 0}`).join('|')} className="dl-panel-motion"><div className="dl-panel">
           {jobs.map((job) => {
             const Icon = STATUS_ICON[job.status] ?? DownloadCloud
             const active = isActive(job.status)
@@ -164,8 +172,10 @@ export default function DownloadsPage() {
               </div>
             )
           })}
-        </div>
+        </div></AnimatedContent>
       )}
     </div>
   )
 }
+
+

@@ -32,6 +32,7 @@ export function AquaAuthProvider({ children }: { children: ReactNode }) {
   const authGeneration = useRef(0)
 
   useEffect(() => {
+    if (maintenance.restricted) return undefined
     let active = true
     const applyAuthResult = async (result: { session: Session | null; user: User | null; profile: AquaProfile | null; emailConfirmationRequired: boolean }) => {
       const generation = ++authGeneration.current
@@ -59,9 +60,13 @@ export function AquaAuthProvider({ children }: { children: ReactNode }) {
       void applyAuthResult(result).catch((reason) => active && setError(errorMessage(reason)))
     })
     return () => { active = false; data.subscription.unsubscribe() }
-  }, [])
+  }, [maintenance.restricted])
 
   const refresh = useCallback(async () => {
+    if (maintenance.restricted) {
+      setSession(null); setUser(null); setProfile(null); setAccountSettings(null); setEmailConfirmationRequired(false); setError(null); setLoading(false)
+      return { session: null, user: null, profile: null, emailConfirmationRequired: false }
+    }
     setLoading(true); setError(null)
     try {
       const result = await restoreAquaAuth()
@@ -74,12 +79,18 @@ export function AquaAuthProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [maintenance.restricted])
 
   const value = useMemo<AquaAuthContextValue>(() => ({
     configured: isSupabaseConfigured,
-    isSignedIn: Boolean(user && profile),
-    session, user, profile, accountSettings, loading, error, emailConfirmationRequired,
+    isSignedIn: !maintenance.restricted && Boolean(user && profile),
+    session: maintenance.restricted ? null : session,
+    user: maintenance.restricted ? null : user,
+    profile: maintenance.restricted ? null : profile,
+    accountSettings: maintenance.restricted ? null : accountSettings,
+    loading: maintenance.restricted ? false : loading,
+    error: maintenance.restricted ? null : error,
+    emailConfirmationRequired: maintenance.restricted ? false : emailConfirmationRequired,
     clearError: () => setError(null),
     acceptTerms: async (version) => {
       if (!user) return

@@ -19,6 +19,7 @@ const MC_AUTH_URL: &str = "https://api.minecraftservices.com/authentication/logi
 const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profile";
 const REDIRECT_URI: &str = "https://login.live.com/oauth20_desktop.srf";
 const AUTH_WINDOW_LABEL: &str = "msa-auth";
+const MAX_MICROSOFT_ACCOUNTS: usize = 5;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MsaAccount {
@@ -380,6 +381,9 @@ pub async fn msa_login(app: AppHandle) -> Result<MsaAccount, String> {
     let client = reqwest::Client::new();
     let acc = full_auth_from_code(&client, &code).await?;
     let mut store = load_account_store(&app);
+    if !store.accounts.iter().any(|account| account.uuid == acc.uuid) && store.accounts.len() >= MAX_MICROSOFT_ACCOUNTS {
+        return Err(format!("Microsoft account limit reached ({MAX_MICROSOFT_ACCOUNTS}/{MAX_MICROSOFT_ACCOUNTS})."));
+    }
     store.accounts.retain(|account| account.uuid != acc.uuid);
     store.accounts.push(acc.clone());
     store.active_uuid = Some(acc.uuid.clone());

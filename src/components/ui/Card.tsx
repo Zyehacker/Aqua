@@ -1,8 +1,8 @@
-import { motion, type HTMLMotionProps } from 'framer-motion'
-import { type ReactNode, memo } from 'react'
+import { type ComponentPropsWithoutRef, type ReactNode, memo } from 'react'
 import { cn } from '../../utils/cn'
+import AnimatedCard from '../motion/AnimatedCard'
 
-type CardProps = HTMLMotionProps<'section'> & {
+type CardProps = Omit<ComponentPropsWithoutRef<'section'>, 'onAnimationStart' | 'onAnimationEnd' | 'onDrag' | 'onDragStart' | 'onDragEnd'> & {
   children: ReactNode
   strong?: boolean
   soft?: boolean
@@ -18,10 +18,7 @@ function Card({
   ...rest
 }: CardProps) {
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+    <AnimatedCard
       className={cn(
         strong ? 'glass-strong' : soft ? 'glass-soft' : 'glass',
         padded && 'section-card',
@@ -30,7 +27,7 @@ function Card({
       {...rest}
     >
       {children}
-    </motion.section>
+    </AnimatedCard>
   )
 }
 

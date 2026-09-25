@@ -82,6 +82,45 @@ fn offline_uuid(name: &str) -> String {
     )
 }
 
+fn is_valid_minecraft_username(value: &str) -> bool {
+    let length = value.len();
+    (3..=16).contains(&length)
+        && value
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'_')
+}
+
+/// Minecraft's launcher username argument is still limited to the legacy
+/// GameProfile name format, even when the rest of the launcher uses newer
+/// authentication arguments. Keep the display name in Settings untouched and
+/// derive a stable, launch-safe name only at the boundary to Minecraft.
+pub(crate) fn normalize_offline_username(value: &str) -> String {
+    let mut name: String = value
+        .trim()
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                Some(character)
+            } else if character.is_whitespace() || character == '-' {
+                Some('_')
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if name.is_empty() {
+        name = "AquaPlayer".to_string();
+    }
+    if name.len() > 16 {
+        name.truncate(16);
+    }
+    while name.len() < 3 {
+        name.push('_');
+    }
+    name
+}
+
 pub fn tokenize_jvm_args(input: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
@@ -157,7 +196,7 @@ pub fn is_running(state: State<'_, LaunchState>) -> bool {
 
 #[tauri::command]
 pub fn stop_minecraft(state: State<'_, LaunchState>) -> Result<(), String> {
-    let pid = state.child_pid.lock().map_err(|e| e.to_string())?.take();
+    let pid = state.child_pid.lock().map_err(|e| e.to_string())?.clone();
     let Some(pid) = pid else {
         return Err("Minecraft is not running.".to_string());
     };
@@ -175,6 +214,11 @@ pub fn stop_minecraft(state: State<'_, LaunchState>) -> Result<(), String> {
         .map_err(|e| format!("Unable to stop Minecraft: {e}"))
         .and_then(|output| {
             if output.status.success() {
+                if let Ok(mut child_pid) = state.child_pid.lock() {
+                    if *child_pid == Some(pid) {
+                        *child_pid = None;
+                    }
+                }
                 Ok(())
             } else {
                 Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
@@ -503,6 +547,22 @@ fn extract_jar_natives(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{is_valid_minecraft_username, normalize_offline_username};
+
+    #[test]
+    fn offline_names_are_valid_and_stable() {
+        assert_eq!(normalize_offline_username("Aqua Player"), "Aqua_Player");
+        assert_eq!(normalize_offline_username("name.with/slash"), "namewithslash");
+        assert_eq!(normalize_offline_username("abcdefghijklmnopq"), "abcdefghijklmnop");
+        assert_eq!(normalize_offline_username(""), "AquaPlayer");
+        assert!(normalize_offline_username("x").len() >= 3);
+        assert!(!is_valid_minecraft_username("Aqua Player"));
+        assert!(is_valid_minecraft_username("Player123"));
+    }
+}
+
 fn extract_natives(
     libraries: &[serde_json::Value],
     libs_root: &std::path::Path,
@@ -625,7 +685,7 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
         .map(|m| m.mc_version.as_str())
         .unwrap_or(settings.version.as_str());
     let required_java_major = get_required_java_major_from_metadata(minecraft_version, &v);
-    let java = ensure_java_for_major(
+    let mut java = ensure_java_for_major(
         app.clone(),
         meta.as_ref()
             .and_then(|m| m.java_path.clone())
@@ -633,6 +693,32 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
         required_java_major,
     )
     .await?;
+    if crate::java::check_java_runtime(PathBuf::from(&java).as_path(), Some(minecraft_version)).is_none() {
+        append_launcher_log(
+            "warn",
+            "java",
+            "Your Java installation is damaged. Aqua is installing a new Java runtime.",
+        );
+        java = ensure_java_for_major(app.clone(), None, required_java_major).await?;
+        if crate::java::check_java_runtime(PathBuf::from(&java).as_path(), Some(minecraft_version)).is_none() {
+            return Err(format!(
+                "Aqua could not install a working Java runtime for Java {required_java_major}. Please install a compatible Java runtime manually or choose a valid Java path in Settings."
+            ));
+        }
+
+        if let Some(instance) = meta.as_ref() {
+            let mut updated = instance.clone();
+            updated.java_path = Some(java.clone());
+            updated.java_runtime = Some(java.clone());
+            updated.java_version = crate::java::check_java_runtime(PathBuf::from(&java).as_path(), Some(minecraft_version)).map(|runtime| runtime.version);
+            let _ = crate::mods::write_metadata(&mc_dir, &updated);
+        }
+
+        let mut updated_settings = settings.clone();
+        updated_settings.java_path = Some(java.clone());
+        updated_settings.java_runtime = Some(java.clone());
+        let _ = crate::settings::save_settings(app.clone(), updated_settings);
+    }
     let java_major = crate::java::check_java_runtime(PathBuf::from(&java).as_path(), Some(minecraft_version))
         .map(|runtime| runtime.major_version)
         .unwrap_or(required_java_major);
@@ -845,12 +931,25 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
     add_arg(&mut cmd, cp_str.clone());
     add_arg(&mut cmd, main_class.clone());
 
-    let active = if settings.offline_mode {
+    let persisted_account = if settings.offline_mode {
         None
     } else {
-        load_account_file(app)
+        load_account_file(app).filter(|account| {
+            let valid = is_valid_minecraft_username(account.username.trim())
+                && !account.mc_access_token.trim().is_empty()
+                && account.mc_access_token.trim() != "0";
+            if !valid {
+                append_launcher_log(
+                    "warn",
+                    "launch.identity",
+                    "Ignoring an invalid persisted Microsoft identity and using the offline profile.",
+                );
+            }
+            valid
+        })
     };
-    let (username, uuid, access_token, user_type) = match active {
+    let offline_launch = persisted_account.is_none();
+    let (username, uuid, access_token, user_type) = match persisted_account {
         Some(acc) => (
             acc.username,
             acc.uuid,
@@ -864,15 +963,23 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
                 .find(|profile| Some(profile.id.as_str()) == settings.active_offline_profile_id.as_deref())
                 .map(|profile| profile.name.as_str())
                 .unwrap_or(settings.offline_profile_name.as_str());
-            let u = if offline_name.trim().is_empty() {
-                "AquaPlayer".to_string()
-            } else {
-                offline_name.to_string()
-            };
+            let u = normalize_offline_username(offline_name);
+            if u != offline_name.trim() {
+                append_launcher_log(
+                    "warn",
+                    "offline.username",
+                    &format!("Normalized offline display name '{}' to Minecraft username '{}'", offline_name, u),
+                );
+            }
             let id = offline_uuid(&u);
             (u, id, "0".to_string(), "legacy".to_string())
         }
     };
+    append_launcher_log(
+        "info",
+        "launch.identity",
+        &format!("Using {} Minecraft identity: {}", if offline_launch { "offline" } else { "Microsoft" }, username),
+    );
 
     let game_profile_id = meta.as_ref().map(|m| m.id.clone()).unwrap_or_else(|| {
         settings
@@ -947,8 +1054,6 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
             replacements["${auth_uuid}"].clone(),
             "--accessToken".into(),
             replacements["${auth_access_token}"].clone(),
-            "--userType".into(),
-            replacements["${user_type}"].clone(),
             "--versionType".into(),
             replacements["${version_type}"].clone(),
         ];
@@ -966,11 +1071,24 @@ pub(crate) async fn build_and_spawn(app: &AppHandle, settings: &Settings) -> Res
         game_args.push("--fullscreen".to_string());
     }
 
+    if let Some(server_address) = settings.server_address.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        game_args.push("--server".to_string());
+        game_args.push(server_address.to_string());
+        if let Some(port) = settings.server_port.filter(|value| *value > 0) {
+            game_args.push("--port".to_string());
+            game_args.push(port.to_string());
+        }
+    }
+
     for arg in game_args {
         add_arg(&mut cmd, arg);
     }
 
     cmd.current_dir(&game_dir);
+    // Minecraft must not inherit Aqua's stdin. An inherited console handle can
+    // keep the launcher process/wrapper alive while the game is saving or
+    // closing, and there is no supported interactive launcher protocol here.
+    cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     #[cfg(windows)]

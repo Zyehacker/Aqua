@@ -365,6 +365,8 @@ mod tests {
             java_runtime: None,
             mc_dir: None,
             instance_id: Some("".to_string()),
+            server_address: None,
+            server_port: None,
             ram_mb: 2048,
             jvm_args: "".to_string(),
             performance_profile: "balanced".to_string(),

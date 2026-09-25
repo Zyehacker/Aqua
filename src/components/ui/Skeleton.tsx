@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import { cn } from '../../utils/cn'
+import AnimatedSkeleton from '../motion/AnimatedSkeleton'
 
 type SkeletonProps = {
   className?: string
@@ -7,7 +8,7 @@ type SkeletonProps = {
 }
 
 export default function Skeleton({ className, style }: SkeletonProps) {
-  return <div className={cn('skeleton', className)} style={style} aria-hidden="true" />
+  return <AnimatedSkeleton className={cn(className)} style={style} />
 }
 
 export function PageSkeleton() {

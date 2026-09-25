@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import {
   Box,
   ChevronRight,
@@ -16,17 +16,18 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Button from '../../components/ui/Button'
 import SearchInput from '../../components/ui/SearchInput'
 import LoadingIndicator from '../../components/ui/LoadingIndicator'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useToast } from '../../hooks/useToast'
-import { fetchInstalledItems, fetchRemoteContent, invalidateContentCache } from '../../services/contentService'
+import { fetchInstalledItems, fetchRemoteContent, fetchUpdates, invalidateContentCache, invalidateInstalledCache } from '../../services/contentService'
 import * as tauri from '../../utils/tauri'
 import type { ContentCategory, ContentItem, ContentPlatform } from '../../types'
 import { cn } from '../../utils/cn'
 import { formatInstanceHeading } from '../../utils/instanceDisplay'
+import { MOTION, contentItemMotion, contentShellMotion } from '../../lib/motion'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { useTranslation } from '../../useTranslation'
 
@@ -85,20 +86,26 @@ const NAV: Array<{ id: ContentCategory; label: string; icon: typeof Gauge }> = [
   { id: 'data-packs', label: 'Data Packs', icon: FileText },
 ]
 
+function ContentIcon({ src, label, className = '' }: { src?: string; label: string; className?: string }) {
+  const [failed, setFailed] = useState(false)
+  const validSrc = src && /^https?:\/\//i.test(src)
+  return validSrc && !failed
+    ? <img className={className} src={src} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    : <span className="content-icon-fallback" aria-label={label}><Box size={18} strokeWidth={1.8} /></span>
+}
+
+function modFilename(item: ContentItem) {
+  return (item.id.split(/[\\/]/).pop() ?? item.name).replace(/\.disabled$/i, '')
+}
+
 function ContentSidebar({
   active,
   onSelect,
   profileLabel,
-  instances,
-  activeInstanceId,
-  onInstanceChange,
 }: {
   active: ContentCategory
   onSelect: (id: ContentCategory) => void
   profileLabel: string
-  instances: tauri.BackendInstance[]
-  activeInstanceId: string | null
-  onInstanceChange: (id: string) => void
 }) {
   const { t } = useTranslation()
   return (
@@ -140,16 +147,6 @@ function ContentSidebar({
         })}
       </div>
 
-      <div className="content-sidebar__footer">
-        <label className="content-instance-select">
-          <span>{t('content.installTarget')}</span>
-          <select value={activeInstanceId ?? ''} onChange={(event) => onInstanceChange(event.target.value)}>
-            {instances.length === 0 ? <option value="">{t('content.noInstance')}</option> : null}
-            {instances.map((instance) => <option key={instance.id} value={instance.id}>{formatInstanceHeading(instance)}</option>)}
-          </select>
-        </label>
-        <strong>{profileLabel}</strong>
-      </div>
     </aside>
   )
 }
@@ -197,8 +194,9 @@ function OverviewPanel({
               key={key}
               type="button"
               className="category-card"
-              whileHover={{ y: -2 }}
-              transition={{ duration: 0.18 }}
+              whileHover={{ y: -1, scale: 1.01 }}
+              whileTap={{ scale: 0.985 }}
+              transition={MOTION.button}
               onClick={() => onManage(key)}
             >
               <div className="category-card__top">
@@ -247,7 +245,7 @@ function DetailPanel({
     <aside className="content-detail glass">
       <div className="content-detail__head">
         <div className="content-detail__icon" style={{ background: `linear-gradient(135deg, ${item.accent}55, ${item.accent}22)` }}>
-          {item.iconUrl ? <img src={item.iconUrl} alt="" loading="lazy" decoding="async" /> : item.iconLabel}
+          <ContentIcon src={item.iconUrl} label={item.iconLabel} />
         </div>
         <div>
           <h2>{item.name}</h2>
@@ -288,11 +286,11 @@ function DetailPanel({
         <div style={{ marginTop: 14 }}>
           {item.installed ? (
             <>
-              <div className="content-installed-state">Installed</div>
-              <Button block onClick={() => onInstall(item)}>Reinstall</Button>
-              <Button block variant="danger" disabled={installing} onClick={() => onRemove(item)}>
+              <div className="content-installed-state">{item.compatibility === 'Update available' ? 'Update available' : 'Installed'}</div>
+              <Button block onClick={() => onInstall(item)}>{item.compatibility === 'Update available' ? <RefreshCw size={16} /> : null}{item.compatibility === 'Update available' ? 'Update' : 'Reinstall'}</Button>
+              {item.compatibility !== 'Update available' ? <Button block variant="danger" disabled={installing} onClick={() => onRemove(item)}>
                 Remove
-              </Button>
+              </Button> : null}
             </>
           ) : (
             <Button
@@ -333,11 +331,15 @@ function BrowsePanel({
   onClose,
   activeInstance,
   mcDir,
+  initialTab = 'browse',
+  onTabChange,
 }: {
   category: Exclude<ContentCategory, 'overview'>
   onClose: () => void
   activeInstance: tauri.BackendInstance | null
   mcDir?: string | null
+  initialTab?: 'browse' | 'installed' | 'updates'
+  onTabChange?: (tab: 'browse' | 'installed' | 'updates') => void
 }) {
   const { t } = useTranslation()
   const toast = useToast()
@@ -347,13 +349,21 @@ function BrowsePanel({
   // placeholder and empty states never leak a raw `content.*` key.
   const displayLabel = t(meta.label)
   const displayDescription = t(meta.description)
-  const [tab, setTab] = useState<'browse' | 'installed'>('browse')
+  const [tab, setTabState] = useState<'browse' | 'installed' | 'updates'>(initialTab)
+  const setTab = (next: 'browse' | 'installed' | 'updates') => {
+    setSelectedId(null)
+    setItems([])
+    setLoadError(null)
+    setTabState(next)
+    onTabChange?.(next)
+  }
   const [platform, setPlatform] = useState<ContentPlatform>('modrinth')
   const [sort, setSort] = useState('downloads')
   const [order, setOrder] = useState('desc')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [items, setItems] = useState<ContentItem[]>([])
+  const itemsRef = useRef<ContentItem[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [installingId, setInstallingId] = useState<string | null>(null)
@@ -362,6 +372,10 @@ function BrowsePanel({
   const [loaderFilter, setLoaderFilter] = useState('all')
   const [compatibilityFilter, setCompatibilityFilter] = useState('all')
   const [shown, setShown] = useState(RESULT_STEP)
+  const [modStates, setModStates] = useState<Record<string, boolean>>({})
+  const [togglingMod, setTogglingMod] = useState<string | null>(null)
+
+  useEffect(() => { itemsRef.current = items }, [items])
 
   const mcVersion = activeInstance?.mc_version || null
   const loader = activeInstance?.loader || null
@@ -386,7 +400,7 @@ function BrowsePanel({
 
   // Installed list — reloads whenever the installed data may have changed.
   useEffect(() => {
-    if (tab !== 'installed') return
+    if (tab !== 'installed' && tab !== 'updates') return
     let cancelled = false
     const load = async () => {
       if (!activeInstance) {
@@ -394,11 +408,13 @@ function BrowsePanel({
         setLoadError(null)
         return
       }
-      setLoading(true)
+      if (itemsRef.current.length === 0) setLoading(true)
       setLoadError(null)
       setShown(RESULT_STEP)
       try {
-        const list = await fetchInstalledItems(baseCategory, activeInstance?.id, mcDir)
+        const list = tab === 'updates'
+          ? await fetchUpdates(baseCategory, activeInstance?.id, mcDir)
+          : await fetchInstalledItems(baseCategory, activeInstance?.id, mcDir)
         if (!cancelled) {
           setItems(list)
           setLoadError(null)
@@ -419,6 +435,15 @@ function BrowsePanel({
     }
   }, [tab, baseCategory, activeInstance, activeInstance?.id, mcDir, reload])
 
+  useEffect(() => {
+    if (category !== 'mods' || !activeInstance) { window.setTimeout(() => setModStates({}), 0); return }
+    let cancelled = false
+    void tauri.listMods(mcDir, activeInstance.id, 'mods').then((mods) => {
+      if (!cancelled) setModStates(Object.fromEntries(mods.map((mod) => [mod.filename, mod.enabled])))
+    }).catch(() => { if (!cancelled) setModStates({}) })
+    return () => { cancelled = true }
+  }, [activeInstance, activeInstance?.id, category, mcDir, reload, tab])
+
   // Browse — debounced on query so typing doesn't fire a request per keystroke.
   useEffect(() => {
     if (tab !== 'browse') return
@@ -431,7 +456,7 @@ function BrowsePanel({
         return
       }
       setShown(RESULT_STEP)
-      setLoading(true)
+      if (itemsRef.current.length === 0) setLoading(true)
       setLoadError(null)
       try {
         const list = await fetchRemoteContent(
@@ -477,7 +502,7 @@ function BrowsePanel({
     return list
   }, [compatibilityFilter, items, loaderFilter, order, sort])
 
-  const selected = sortedItems.find((item) => item.id === selectedId) ?? sortedItems[0] ?? null
+  const selected = selectedId ? sortedItems.find((item) => item.id === selectedId) ?? null : null
 
   const handleRemove = async (item: ContentItem) => {
     if (!activeInstance || !item.installed) return
@@ -485,7 +510,7 @@ function BrowsePanel({
     setInstallProgress({ percentage: 0, message: `Preparing ${item.name}`, done: 0, total: 0 })
     try {
       await tauri.removeInstanceItem(item.id, activeInstance.id, category, mcDir)
-      invalidateContentCache()
+      invalidateInstalledCache(category, activeInstance.id, mcDir)
       const list = await fetchInstalledItems(category, activeInstance.id, mcDir)
       setItems(list)
       setSelectedId(null)
@@ -517,7 +542,7 @@ function BrowsePanel({
         item.iconUrl,
       )
       toast.pushToast(`${item.name} installed successfully`, 'success')
-      invalidateContentCache()
+      invalidateInstalledCache(category, activeInstance.id, mcDir)
       // Confirm the persisted instance state, rather than marking a search hit
       // as installed locally before the backend has written the file.
       const list = await fetchInstalledItems(category, activeInstance.id, mcDir)
@@ -531,6 +556,20 @@ function BrowsePanel({
     }
   }
 
+  const toggleInstalledMod = async (item: ContentItem) => {
+    if (!activeInstance || category !== 'mods' || !item.installed) return
+    const filename = modFilename(item)
+    const enabled = !(modStates[filename] ?? item.compatibility !== 'Disabled')
+    setTogglingMod(item.id)
+    try {
+      await tauri.toggleMod(mcDir, activeInstance.id, filename, enabled, 'mods')
+      setModStates((current) => ({ ...current, [filename]: enabled }))
+      toast.pushToast(`${item.name} ${enabled ? 'enabled' : 'disabled'}`, 'success')
+    } catch (error) {
+      toast.pushToast(error instanceof Error ? error.message : 'Unable to change mod state.', 'error')
+    } finally { setTogglingMod(null) }
+  }
+
   return (
     <>
     <section className="content-main">
@@ -540,6 +579,7 @@ function BrowsePanel({
               {displayLabel}
             </h2>
             <p className="page-subtitle">{displayDescription}</p>
+            <div className="content-target-banner"><span>Target</span><strong>{activeInstance ? `${activeInstance.mc_version} • ${activeInstance.loader === 'vanilla' ? 'Vanilla' : activeInstance.loader}` : 'Select an instance'}</strong><small>{activeInstance ? formatInstanceHeading(activeInstance) : 'Choose an instance from Instances or Home.'}</small></div>
           </div>
           <Button variant="ghost" size="icon" aria-label="Back to overview" onClick={onClose}>
             <X size={18} />
@@ -548,12 +588,18 @@ function BrowsePanel({
 
         <div className="content-toolbar">
           <div className="segmented" role="tablist" aria-label="Library view">
-            <button type="button" className={cn(tab === 'browse' && 'active')} onClick={() => setTab('browse')}>
+            <motion.button type="button" className={cn(tab === 'browse' && 'active')} onClick={() => setTab('browse')} whileTap={{ scale: 0.98 }}>
               Browse
-            </button>
-            <button type="button" className={cn(tab === 'installed' && 'active')} onClick={() => setTab('installed')}>
+              {tab === 'browse' ? <motion.span className="segmented__indicator" layoutId="content-tab-indicator" transition={MOTION.spring} /> : null}
+            </motion.button>
+            <motion.button type="button" className={cn(tab === 'installed' && 'active')} onClick={() => setTab('installed')} whileTap={{ scale: 0.98 }}>
               Installed
-            </button>
+              {tab === 'installed' ? <motion.span className="segmented__indicator" layoutId="content-tab-indicator" transition={MOTION.spring} /> : null}
+            </motion.button>
+            <motion.button type="button" className={cn(tab === 'updates' && 'active')} onClick={() => setTab('updates')} whileTap={{ scale: 0.98 }}>
+              Updates
+              {tab === 'updates' ? <motion.span className="segmented__indicator" layoutId="content-tab-indicator" transition={MOTION.spring} /> : null}
+            </motion.button>
           </div>
 
           <label className="select-pill">
@@ -579,7 +625,11 @@ function BrowsePanel({
             >
               Modrinth
             </button>
-            <button type="button" disabled title="CurseForge integration is not available yet">CurseForge</button>
+          </div>
+
+          <div className="content-filters" aria-label="Content filters">
+            <label className="select-pill"><span>Loader</span><select value={loaderFilter} onChange={(event) => setLoaderFilter(event.target.value)}><option value="all">All</option><option value="fabric">Fabric</option><option value="forge">Forge</option></select></label>
+            <label className="select-pill"><span>Compatibility</span><select value={compatibilityFilter} onChange={(event) => setCompatibilityFilter(event.target.value)}><option value="all">All</option><option value="Compatible">Compatible</option><option value="Incompatible">Incompatible</option><option value="NoVersion">No version</option></select></label>
           </div>
 
           <Button
@@ -587,15 +637,24 @@ function BrowsePanel({
             size="icon"
             aria-label="Refresh results"
             onClick={async () => {
+              setLoading(true)
+              setLoadError(null)
               invalidateContentCache()
-              if (tab === 'installed') {
-                const list = await fetchInstalledItems(category, activeInstance?.id, mcDir)
-                setItems(list)
-              } else {
-                const list = await fetchRemoteContent(category, query, mcVersion, loader, activeInstance?.id ?? null, activeInstance?.loader_version ?? null, mcDir)
-                setItems(list)
-              }
-              toast.pushToast(`${displayLabel} refreshed`, 'success')
+              try {
+                if (tab === 'installed') {
+                  const list = await fetchInstalledItems(category, activeInstance?.id, mcDir)
+                  setItems(list)
+                } else if (tab === 'updates') {
+                  const list = await fetchUpdates(category, activeInstance?.id, mcDir)
+                  setItems(list)
+                } else {
+                  const list = await fetchRemoteContent(category, query, mcVersion, loader, activeInstance?.id ?? null, activeInstance?.loader_version ?? null, mcDir)
+                  setItems(list)
+                }
+                toast.pushToast(`${displayLabel} refreshed`, 'success')
+              } catch (error) {
+                setLoadError(error instanceof Error ? error.message : 'Unable to refresh content.')
+              } finally { setLoading(false) }
             }}
           >
             <RefreshCw size={16} />
@@ -610,11 +669,6 @@ function BrowsePanel({
           placeholder={`Search ${displayLabel.toLowerCase()}...`}
         />
 
-        <div className="content-filters" aria-label="Content filters">
-          <label className="select-pill"><span>Loader</span><select value={loaderFilter} onChange={(event) => setLoaderFilter(event.target.value)}><option value="all">All</option><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option><option value="quilt">Quilt</option></select></label>
-          <label className="select-pill"><span>Compatibility</span><select value={compatibilityFilter} onChange={(event) => setCompatibilityFilter(event.target.value)}><option value="all">All</option><option value="Compatible">Compatible</option><option value="Incompatible">Incompatible</option><option value="NoVersion">No version</option></select></label>
-        </div>
-
         <div className="content-list" role="listbox" aria-label={displayLabel}>
           {loadError ? (
             <EmptyState title={contentErrorTitle(loadError)} description={loadError} actionLabel="Retry" onAction={() => setReload((value) => value + 1)} />
@@ -624,37 +678,52 @@ function BrowsePanel({
             <LoadingIndicator label={`Loading ${displayLabel.toLowerCase()}`} detail={activeInstance ? `For ${formatInstanceHeading(activeInstance)}` : undefined} />
           ) : sortedItems.length === 0 ? (
             <EmptyState
-              title={tab === 'installed' ? `No installed ${displayLabel.toLowerCase()}` : 'No results'}
-              description={tab === 'installed' ? 'No items installed in this instance folder.' : 'Try another search term.'}
+              title={tab === 'installed' ? `No installed ${displayLabel.toLowerCase()}` : tab === 'updates' ? 'No compatible updates' : 'No results'}
+              description={tab === 'installed' ? 'No items installed in this instance folder.' : tab === 'updates' ? 'Installed items are up to date for this Minecraft version and loader.' : 'Try another search term.'}
               actionLabel={query ? 'Clear search' : undefined}
               onAction={() => setQuery('')}
             />
           ) : (
-            <>
-            {sortedItems.slice(0, shown).map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="option"
-                aria-selected={(selected?.id ?? null) === item.id}
-                className={cn('content-item', selected?.id === item.id && 'active')}
-                onClick={() => setSelectedId(item.id)}
+             <>
+             <AnimatePresence initial={false} mode="popLayout">
+             {sortedItems.slice(0, shown).map((item, index) => (
+               <motion.div
+                 key={item.id}
+                 role="option"
+                 aria-selected={(selected?.id ?? null) === item.id}
+                 className={cn('content-item', selected?.id === item.id && 'active')}
+                 layout
+                 variants={contentItemMotion}
+                 initial="initial"
+                 animate="enter"
+                 exit="exit"
+                 whileHover={{ x: 3, backgroundColor: 'rgba(105, 215, 255, 0.055)' }}
+                 transition={{ layout: MOTION.spring, delay: Math.min(index * 0.025, 0.15) }}
+                 onClick={() => setSelectedId(item.id)}
+                tabIndex={0}
+                onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedId(item.id) }}
               >
                 <div
                   className="content-item__icon"
                   style={{ background: `linear-gradient(135deg, ${item.accent}66, ${item.accent}22)` }}
                 >
-                  {item.iconUrl ? <img src={item.iconUrl} alt="" loading="lazy" decoding="async" /> : item.iconLabel}
+                  <ContentIcon src={item.iconUrl} label={item.iconLabel} />
                 </div>
                 <div className="content-item__meta">
                   <strong>{item.name}</strong>
-                  <span>{item.author}</span>
+                  <span>{item.author}{item.version !== 'local' ? ` · ${item.version}` : ''}</span>
+                  <small>{item.description}</small>
                 </div>
-                <div className={cn('content-item__downloads', item.compatibility === 'Incompatible' && 'content-item__downloads--danger')}>
-                  {item.installed ? 'Installed' : item.compatibility}
+                <div className="content-item__actions">
+                  <div className={cn('content-item__downloads', item.compatibility === 'Incompatible' && 'content-item__downloads--danger')}>
+                    {item.installed ? (category === 'mods' ? ((modStates[modFilename(item)] ?? item.compatibility !== 'Disabled') ? 'Enabled' : 'Disabled') : item.compatibility) : item.compatibility}
+                  </div>
+                  {tab === 'updates' ? <Button size="sm" variant="aqua" loading={installingId === item.id} onClick={(event) => { event.stopPropagation(); void handleInstall(item) }}><RefreshCw size={13} />Update</Button> : null}
+                  {tab === 'installed' && category === 'mods' ? <button type="button" className={cn('mod-toggle', (modStates[modFilename(item)] ?? item.compatibility !== 'Disabled') && 'active')} disabled={togglingMod === item.id} onClick={(event) => { event.stopPropagation(); void toggleInstalledMod(item) }} aria-label={`${item.name} ${((modStates[modFilename(item)] ?? item.compatibility !== 'Disabled') ? 'enabled' : 'disabled')}`}><span /></button> : null}
                 </div>
-              </button>
-            ))}
+               </motion.div>
+             ))}
+             </AnimatePresence>
             {shown < sortedItems.length ? (
               <button
                 type="button"
@@ -682,43 +751,39 @@ function BrowsePanel({
 
 export default function ContentPage() {
   const navigate = useNavigate()
-  const [category, setCategory] = useState<ContentCategory>('overview')
-  const { instances, activeInstance, activeInstanceId, selectInstance, settings } = useLauncherData()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab')
+  const initialTab = requestedTab === 'installed' || requestedTab === 'updates' ? requestedTab : 'browse'
+  const [category, setCategory] = useState<ContentCategory>(requestedTab ? 'mods' : 'overview')
+  const { activeInstance, settings } = useLauncherData()
 
   const profileLabel = activeInstance ? formatInstanceHeading(activeInstance) : 'No instance selected'
 
   return (
-    <div className="page" style={{ paddingBottom: 0 }}>
+    <motion.div className="page" style={{ paddingBottom: 0 }} variants={contentShellMotion} initial="initial" animate="enter">
       <div className={cn('content-shell', category !== 'overview' && 'with-detail')}>
-        <ContentSidebar active={category} onSelect={setCategory} profileLabel={profileLabel} instances={instances} activeInstanceId={activeInstanceId} onInstanceChange={(id) => void selectInstance(id)} />
+        <ContentSidebar active={category} onSelect={setCategory} profileLabel={profileLabel} />
 
-        <AnimatePresence initial={false}>
-          <motion.div
+        {category === 'overview' ? (
+          <OverviewPanel
+            onManage={(id) => setCategory(id)}
+            onClose={() => navigate('/')}
+            profileLabel={profileLabel}
+          />
+        ) : (
+          <BrowsePanel
             key={category}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.12 }}
-            style={{ display: 'contents' }}
-          >
-            {category === 'overview' ? (
-              <OverviewPanel
-                onManage={(id) => setCategory(id)}
-                onClose={() => navigate('/')}
-                profileLabel={profileLabel}
-              />
-            ) : (
-              <BrowsePanel
-                category={category}
-                onClose={() => setCategory('overview')}
-                activeInstance={activeInstance}
-                mcDir={settings?.mc_dir}
-              />
-            )}
-          </motion.div>
-        </AnimatePresence>
+            category={category}
+            onClose={() => setCategory('overview')}
+            activeInstance={activeInstance}
+            mcDir={settings?.mc_dir}
+            initialTab={initialTab}
+            onTabChange={(tab) => setSearchParams(tab === 'browse' ? {} : { tab })}
+          />
+        )}
       </div>
-    </div>
+    </motion.div>
   )
 }
+
 

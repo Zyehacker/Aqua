@@ -420,6 +420,17 @@ fn content_filename(filename: &str) -> Result<&str, String> {
     Ok(filename)
 }
 
+fn validate_profile_id(profile_id: &str) -> Result<&str, String> {
+    let path = Path::new(profile_id);
+    if profile_id.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err("Invalid instance ID.".to_string());
+    }
+    Ok(profile_id)
+}
+
 fn classify_archive(path: &Path) -> Option<&'static str> {
     let lower = path.file_name()?.to_string_lossy().to_lowercase();
     if lower.ends_with(".disabled") {
@@ -550,6 +561,7 @@ fn count_files(dir: &Path) -> u64 {
 
 #[tauri::command]
 pub fn list_mods(mc_dir: Option<String>, profile_id: String, category: String) -> Result<Vec<ModInfo>, String> {
+    validate_profile_id(&profile_id)?;
     let root = aqua_root(mc_dir)?;
     let dir = category_dir(&root, &profile_id, &category);
     let _ = std::fs::create_dir_all(&dir);
@@ -593,6 +605,7 @@ pub fn add_mod(
     source_path: String,
     category: String,
 ) -> Result<String, String> {
+    validate_profile_id(&profile_id)?;
     let root = aqua_root(mc_dir)?;
     let src = PathBuf::from(&source_path);
     if !src.exists() {
@@ -623,6 +636,7 @@ pub fn delete_mod(
     filename: String,
     category: String,
 ) -> Result<(), String> {
+    validate_profile_id(&profile_id)?;
     let root = aqua_root(mc_dir)?;
     let filename = content_filename(&filename)?;
     let dir = category_dir(&root, &profile_id, &category);
@@ -654,6 +668,7 @@ pub fn toggle_mod(
     enabled: bool,
     category: String,
 ) -> Result<(), String> {
+    validate_profile_id(&profile_id)?;
     let root = aqua_root(mc_dir)?;
     let filename = content_filename(&filename)?;
     let dir = category_dir(&root, &profile_id, &category);
@@ -690,6 +705,7 @@ pub fn open_mods_folder(
     profile_id: String,
     category: String,
 ) -> Result<(), String> {
+    validate_profile_id(&profile_id)?;
     let root = aqua_root(mc_dir)?;
     let dir = category_dir(&root, &profile_id, &category);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

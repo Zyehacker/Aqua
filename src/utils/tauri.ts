@@ -38,6 +38,8 @@ export type LauncherSettings = {
   java_runtime?: string | null
   mc_dir?: string | null
   instance_id?: string | null
+  server_address?: string | null
+  server_port?: number | null
   offline_mode: boolean
   offline_profile_name: string
   offline_profiles: Array<{ id: string; name: string }>
@@ -51,6 +53,7 @@ export type LauncherSettings = {
   performance_profile: 'maximum' | 'balanced' | 'quality' | string
   show_snapshots: boolean
   minimize_on_launch: boolean
+  quick_startup: boolean
   window_x?: number | null
   window_y?: number | null
   window_width?: number | null
@@ -318,7 +321,7 @@ export async function markInstancePlayed(instanceId: string, mcDir?: string | nu
   return invoke<void>('mark_instance_played', { instanceId, mcDir })
 }
 
-export async function launchInstance(instance?: string | BackendInstance) {
+export async function launchInstance(instance?: string | BackendInstance, server?: { host: string; port: number }) {
   const settings = await getSettings()
   if (!settings) return null
   let launchSettings = settings
@@ -330,6 +333,10 @@ export async function launchInstance(instance?: string | BackendInstance) {
     launchSettings = resolvedInstance
       ? settingsForInstance(settings, resolvedInstance)
       : settingsForInstalledVersion(settings, instance)
+  }
+
+  if (server) {
+    launchSettings = { ...launchSettings, server_address: server.host, server_port: server.port }
   }
 
   const result = await invoke<LauncherLaunchResult>('launch_instance_v2', { settings: launchSettings })
@@ -492,6 +499,27 @@ export type LocalItem = {
   name: string
   path: string
   size: number
+  project_id?: string | null
+  icon_url?: string | null
+  enabled: boolean
+}
+
+export type LocalUpdate = {
+  project_id: string
+  filename: string
+  current_version_id: string
+  latest_version_id: string
+  icon_url?: string | null
+}
+
+export type ModInfo = { filename: string; size: number; enabled: boolean; category: string }
+
+export async function listMods(mcDir: string | null | undefined, profileId: string, category = 'mods') {
+  return (await invoke<ModInfo[]>('list_mods', { mcDir, profileId, category })) ?? []
+}
+
+export async function toggleMod(mcDir: string | null | undefined, profileId: string, filename: string, enabled: boolean, category = 'mods') {
+  return invoke<void>('toggle_mod', { mcDir, profileId, filename, enabled, category })
 }
 
 export async function searchModrinth(
@@ -530,6 +558,10 @@ export async function listInstanceItems(
       mcDir,
     })) ?? []
   )
+}
+
+export async function listInstanceUpdates(category: string, instanceId?: string | null, mcDir?: string | null) {
+  return (await invoke<LocalUpdate[]>('list_instance_updates', { instanceId, category, mcDir })) ?? []
 }
 
 export async function installModrinthProject(

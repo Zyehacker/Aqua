@@ -4,6 +4,7 @@ type ThemeMode = 'dark' | 'dim'
 type AccentMode = 'aqua' | 'cyan' | 'mint' | 'lavender' | 'amber'
 type BackgroundMode = 'default' | 'solid' | 'gradient' | 'video'
 type LayoutDensity = 'comfortable' | 'compact'
+type LayoutMode = 'top' | 'sidebar'
 type AppState = {
   theme: ThemeMode
   accent: AccentMode | 'custom'
@@ -13,6 +14,11 @@ type AppState = {
   uiSoundVolume: number
   backgroundMode: BackgroundMode
   layoutDensity: LayoutDensity
+  layoutMode: LayoutMode
+  backgroundMotion: boolean
+  showQuickInstanceBar: boolean
+  showPartnerServers: boolean
+  backgroundBlur: number
   notificationsOpen: boolean
   accountOpen: boolean
   mobileNavOpen: boolean
@@ -36,6 +42,11 @@ let state: AppState = {
   uiSoundVolume: readStorage<number>('aqua.uiSoundVolume', 0.28),
   backgroundMode: readStorage<BackgroundMode>('aqua.backgroundMode', 'default'),
   layoutDensity: readStorage<LayoutDensity>('aqua.layoutDensity', 'comfortable'),
+  layoutMode: readStorage<LayoutMode>('aqua.layoutMode', 'top'),
+  backgroundMotion: readStorage<boolean>('aqua.backgroundMotion', true),
+  showQuickInstanceBar: readStorage<boolean>('aqua.showQuickInstanceBar', false),
+  showPartnerServers: readStorage<boolean>('aqua.showPartnerServers', false),
+  backgroundBlur: readStorage<number>('aqua.backgroundBlur', 0),
   notificationsOpen: false,
   accountOpen: false,
   mobileNavOpen: false,
@@ -46,6 +57,8 @@ document.documentElement.dataset.theme = state.theme
 document.documentElement.dataset.reduceMotion = state.reduceMotion ? 'true' : 'false'
 document.documentElement.dataset.background = state.backgroundMode
 document.documentElement.dataset.density = state.layoutDensity
+document.documentElement.dataset.layout = state.layoutMode
+document.documentElement.style.setProperty('--background-blur', `${state.backgroundBlur}px`)
 
 const listeners = new Set<() => void>()
 
@@ -94,6 +107,11 @@ function setState(partial: Partial<AppState>) {
     document.documentElement.dataset.density = partial.layoutDensity
     persist('aqua.layoutDensity', partial.layoutDensity)
   }
+  if (partial.layoutMode) { document.documentElement.dataset.layout = partial.layoutMode; persist('aqua.layoutMode', partial.layoutMode) }
+  if (partial.backgroundMotion !== undefined) persist('aqua.backgroundMotion', partial.backgroundMotion)
+  if (partial.showQuickInstanceBar !== undefined) persist('aqua.showQuickInstanceBar', partial.showQuickInstanceBar)
+  if (partial.showPartnerServers !== undefined) persist('aqua.showPartnerServers', partial.showPartnerServers)
+  if (partial.backgroundBlur !== undefined) { document.documentElement.style.setProperty('--background-blur', `${partial.backgroundBlur}px`); persist('aqua.backgroundBlur', partial.backgroundBlur) }
   emit()
 }
 
@@ -115,6 +133,7 @@ export function useAppStore<T>(selector: (state: AppState) => T): T {
 }
 
 export const appActions = {
+  setTheme(theme: ThemeMode) { setState({ theme }) },
   setAccent(accent: AppState['accent'], accentColor = state.accentColor) {
     setState({ accent, accentColor })
   },
@@ -135,6 +154,11 @@ export const appActions = {
   setLayoutDensity(density: LayoutDensity) {
     setState({ layoutDensity: density })
   },
+  setLayoutMode(mode: LayoutMode) { setState({ layoutMode: mode }) },
+  setBackgroundMotion(enabled: boolean) { setState({ backgroundMotion: enabled }) },
+  setShowQuickInstanceBar(enabled: boolean) { setState({ showQuickInstanceBar: enabled }) },
+  setShowPartnerServers(enabled: boolean) { setState({ showPartnerServers: enabled }) },
+  setBackgroundBlur(value: number) { setState({ backgroundBlur: Math.max(0, Math.min(30, value)) }) },
   toggleNotifications() {
     setState({ notificationsOpen: !state.notificationsOpen, accountOpen: false })
   },

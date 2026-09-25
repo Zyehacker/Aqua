@@ -28,6 +28,7 @@ export default function SettingsPage() {
   const uiSoundVolume = useAppStore((s) => s.uiSoundVolume)
   const backgroundMode = useAppStore((s) => s.backgroundMode)
   const layoutDensity = useAppStore((s) => s.layoutDensity)
+  const layoutMode = useAppStore((s) => s.layoutMode)
   const { settings, jvm, javaRuntimes, busy, updateSettings, detectJava } = useLauncherData()
 
   const recommendedRam = jvm?.recommended_ram_mb ?? 2048
@@ -35,6 +36,7 @@ export default function SettingsPage() {
   const [ram, setRam] = useState(settings?.ram_mb ?? recommendedRam)
   const [showSnapshots, setShowSnapshots] = useState(settings?.show_snapshots ?? false)
   const [minimizeOnLaunch, setMinimizeOnLaunch] = useState(settings?.minimize_on_launch ?? true)
+  const [quickStartup, setQuickStartup] = useState(settings?.quick_startup ?? true)
   const [hardware, setHardware] = useState<tauri.HardwareInfo | null>(null)
 
   useEffect(() => {
@@ -43,6 +45,7 @@ export default function SettingsPage() {
         setRam(settings.ram_mb || recommendedRam)
         setShowSnapshots(settings.show_snapshots)
         setMinimizeOnLaunch(settings.minimize_on_launch)
+        setQuickStartup(settings.quick_startup)
       }, 0)
       return () => window.clearTimeout(id)
     }
@@ -52,17 +55,16 @@ export default function SettingsPage() {
   const saveSettings = useCallback(async (partial: Partial<tauri.LauncherSettings>) => {
     try {
       await updateSettings(partial)
-      toast.pushToast(t('settings.saved'), 'success')
     } catch (err) {
       toast.pushToast(err instanceof Error ? err.message : 'Save failed.', 'error')
     } finally { /* settings state is updated by the shared launcher store */ }
-  }, [t, toast, updateSettings])
+  }, [toast, updateSettings])
 
   const javaLabel = settings?.java_path ?? settings?.java_runtime ?? javaRuntimes[0]?.path ?? 'Not detected'
   const mcDirLabel = settings?.mc_dir ?? 'Default'
 
   return (
-    <div className="page page-narrow">
+    <div className="page settings-page">
       <div className="page-header">
         <h1 className="page-title">{t('settings.title')}</h1>
       </div>
@@ -118,17 +120,10 @@ export default function SettingsPage() {
                 <strong>{t('settings.theme')}</strong>
               </div>
               <div className="settings-row__control">
-                <span className="settings-val">{theme === 'dark' ? t('settings.dark') : t('settings.dim')}</span>
-                <button
-                  type="button"
-                  className="settings-btn"
-                  onClick={() => {
-                    appActions.toggleTheme()
-                    toast.pushToast('Theme updated', 'success')
-                  }}
-                  >
-                  {t('settings.switch')}
-                </button>
+                <div className="segmented" role="group" aria-label="Theme">
+                  <button type="button" className={theme === 'dark' ? 'active' : undefined} onClick={() => appActions.setTheme('dark')}>{t('settings.dark')}</button>
+                  <button type="button" className={theme === 'dim' ? 'active' : undefined} onClick={() => appActions.setTheme('dim')}>{t('settings.dim')}</button>
+                </div>
               </div>
             </div>
             <div className="settings-row">
@@ -180,7 +175,6 @@ export default function SettingsPage() {
                   aria-label="Background mode"
                   onChange={(event) => {
                     appActions.setBackgroundMode(event.target.value as 'default' | 'solid' | 'gradient' | 'video')
-                    toast.pushToast('Background updated', 'success')
                   }}
                 >
                   <option value="default">Default</option>
@@ -201,7 +195,6 @@ export default function SettingsPage() {
                   aria-label="Layout density"
                   onChange={(event) => {
                     appActions.setLayoutDensity(event.target.value as 'comfortable' | 'compact')
-                    toast.pushToast('Layout updated', 'success')
                   }}
                 >
                   <option value="comfortable">Comfortable</option>
@@ -209,6 +202,12 @@ export default function SettingsPage() {
                 </select>
               </div>
             </div>
+            <div className="settings-row">
+              <div className="settings-row__label"><strong>Navigation layout</strong><span>Keep the default top bar or use a compact sidebar.</span></div>
+              <div className="segmented" role="group" aria-label="Navigation layout"><button type="button" className={layoutMode === 'top' ? 'active' : undefined} onClick={() => appActions.setLayoutMode('top')}>Top bar</button><button type="button" className={layoutMode === 'sidebar' ? 'active' : undefined} onClick={() => appActions.setLayoutMode('sidebar')}>Sidebar</button></div>
+            </div>
+            <div className="settings-row settings-row--disabled"><div className="settings-row__label"><strong>Show Top Quick-Instance Bar</strong><span>Temporarily unavailable in this client layout.</span></div><Toggle checked={false} onChange={() => undefined} disabled label="Show Top Quick-Instance Bar" /></div>
+            <div className="settings-row settings-row--disabled"><div className="settings-row__label"><strong>Show Featured &amp; Partner Servers</strong><span>Temporarily unavailable in this client layout.</span></div><Toggle checked={false} onChange={() => undefined} disabled label="Show Featured and Partner Servers" /></div>
           </div>
         </section>
 
@@ -270,6 +269,17 @@ export default function SettingsPage() {
                 label="Minimize on launch"
               />
             </div>
+            <div className="settings-row">
+              <div className="settings-row__label">
+                <strong>Quick Startup</strong>
+                <span>Keeps Aqua Client running quietly in the background after closing so it can start faster next time. {quickStartup ? '' : 'Aqua will fully exit when closed.'}</span>
+              </div>
+              <Toggle
+                checked={quickStartup}
+                onChange={(value) => { setQuickStartup(value); void saveSettings({ quick_startup: value }) }}
+                label="Quick Startup"
+              />
+            </div>
           </div>
         </section>
 
@@ -329,3 +339,5 @@ export default function SettingsPage() {
     </div>
   )
 }
+
+

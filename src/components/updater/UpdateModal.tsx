@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence, motion } from 'motion/react'
 import {
   Sparkles,
   DownloadCloud,
@@ -42,6 +42,7 @@ export default function UpdateModal() {
   const [downloadedBytes, setDownloadedBytes] = useState<number>(0)
   const [totalBytes, setTotalBytes] = useState<number | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => window.localStorage.getItem('aqua.update.dismissed'))
 
   // Initial check and event listeners
   useEffect(() => {
@@ -54,7 +55,7 @@ export default function UpdateModal() {
       // Listen for background update detection
       const subAvail = await listen<UpdateInfo>('updater-available', (info) => {
         setUpdateInfo(info)
-        setStatus('available')
+        setStatus(info.version === dismissedVersion ? 'idle' : 'available')
       })
       if (subAvail) unlistenAvailable = subAvail
 
@@ -93,10 +94,12 @@ export default function UpdateModal() {
         const found = await checkForUpdate()
         if (found) {
           setUpdateInfo(found)
-          setStatus('available')
+          setStatus(found.version === dismissedVersion ? 'idle' : 'available')
         }
       } catch {
-        // Silently ignore startup network hiccups
+        // Update endpoints are optional. A missing release manifest must not
+        // interrupt the launcher or present a broken update dialog.
+        setStatus('idle')
       }
     }
 
@@ -108,7 +111,15 @@ export default function UpdateModal() {
       if (unlistenComplete) unlistenComplete()
       if (unlistenError) unlistenError()
     }
-  }, [])
+  }, [dismissedVersion])
+
+  const dismissUpdate = () => {
+    if (updateInfo?.version) {
+      window.localStorage.setItem('aqua.update.dismissed', updateInfo.version)
+      setDismissedVersion(updateInfo.version)
+    }
+    setStatus('idle')
+  }
 
   const handleStartUpdate = useCallback(async () => {
     setStatus('downloading')
@@ -251,7 +262,7 @@ export default function UpdateModal() {
             {(status === 'available' || status === 'error') && (
               <button
                 type="button"
-                onClick={() => setStatus('idle')}
+                onClick={dismissUpdate}
                 aria-label="Dismiss"
                 style={{
                   background: 'transparent',
@@ -330,7 +341,7 @@ export default function UpdateModal() {
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             {status === 'available' && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setStatus('idle')}>
+                <Button variant="ghost" size="sm" onClick={dismissUpdate}>
                   Later
                 </Button>
                 <Button variant="primary" size="sm" onClick={handleStartUpdate}>
@@ -342,7 +353,7 @@ export default function UpdateModal() {
 
             {status === 'ready' && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setStatus('idle')}>
+                <Button variant="ghost" size="sm" onClick={dismissUpdate}>
                   Later
                 </Button>
                 <Button variant="aqua" size="sm" onClick={handleRestart}>
@@ -354,7 +365,7 @@ export default function UpdateModal() {
 
             {status === 'error' && (
               <>
-                <Button variant="ghost" size="sm" onClick={() => setStatus('idle')}>
+                <Button variant="ghost" size="sm" onClick={dismissUpdate}>
                   Dismiss
                 </Button>
                 <Button variant="primary" size="sm" onClick={handleStartUpdate}>

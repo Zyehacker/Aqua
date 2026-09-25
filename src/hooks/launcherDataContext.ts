@@ -11,6 +11,7 @@ export type LauncherData = {
   loading: boolean
   error: string | null
   busy: string | null
+  processRunning: boolean
   activeInstanceId: string | null
   activeInstance: tauri.BackendInstance | null
   refresh: () => Promise<void>

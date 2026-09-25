@@ -99,8 +99,36 @@ pub fn get_required_java_major_from_metadata(
         .unwrap_or_else(|| get_required_java_major(mc_version))
 }
 
+fn java_install_root(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+
+    if current.file_name().and_then(|name| name.to_str()) == Some(java_bin_name()) {
+        current = current.parent()?.to_path_buf();
+    }
+
+    if current.file_name().and_then(|name| name.to_str()) == Some("bin") {
+        return current.parent().map(PathBuf::from);
+    }
+
+    if current.join("bin").join(java_bin_name()).exists() {
+        return Some(current);
+    }
+
+    Some(current)
+}
+
+pub fn java_runtime_has_required_files(path: &Path) -> bool {
+    let Some(root) = java_install_root(path) else {
+        return false;
+    };
+    root.join("lib").join("tzdb.dat").is_file()
+}
+
 pub fn check_java_runtime(path: &Path, mc_version: Option<&str>) -> Option<JavaRuntime> {
-    if !path.exists() {
+    if !path.exists() || !path.is_file() {
+        return None;
+    }
+    if !java_runtime_has_required_files(path) {
         return None;
     }
 
@@ -415,6 +443,11 @@ pub async fn ensure_java_for_major(
             if check_java_runtime_major(Path::new(trimmed), required_major).is_some() {
                 return Ok(trimmed.to_string());
             }
+            crate::settings::append_launcher_log(
+                "warn",
+                "java",
+                "Your Java installation is damaged. Aqua is installing a new Java runtime.",
+            );
         }
     }
 
@@ -432,5 +465,52 @@ pub async fn ensure_java_for_major(
         }
     }
 
-    install_temurin(&app, required_major).await
+    match install_temurin(&app, required_major).await {
+        Ok(path) => Ok(path),
+        Err(_) => Err(format!(
+            "Aqua could not install a working Java runtime for Java {required_major}. Please install a compatible Java runtime manually or choose a valid Java path in Settings."
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("aqua-{name}-{unique}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn rejects_runtime_missing_tzdb_file() {
+        let dir = unique_test_dir("missing-tzdb");
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let java_exe = bin_dir.join(java_bin_name());
+        fs::write(&java_exe, "stub").unwrap();
+
+        assert!(!java_runtime_has_required_files(&java_exe));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accepts_runtime_with_required_files() {
+        let dir = unique_test_dir("valid-java");
+        let bin_dir = dir.join("bin");
+        let lib_dir = dir.join("lib");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&lib_dir).unwrap();
+        let java_exe = bin_dir.join(java_bin_name());
+        fs::write(&java_exe, "stub").unwrap();
+        fs::write(lib_dir.join("tzdb.dat"), "stub").unwrap();
+
+        assert!(java_runtime_has_required_files(&java_exe));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

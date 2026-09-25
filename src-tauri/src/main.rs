@@ -19,12 +19,24 @@ use std::sync::Mutex;
 
 use crate::launch::LaunchState;
 use crate::settings::{ensure_launcher_layout, get_settings, save_settings};
-use tauri::{Manager, WindowEvent};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Emitter, Manager, WindowEvent};
+
+pub struct QuickStartupState {
+    pub allow_close: Mutex<bool>,
+}
 
 fn main() {
     // ensure directory layout exists early
     let _ = ensure_launcher_layout();
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -32,6 +44,33 @@ fn main() {
         .setup(|app| {
             // Restore window size/position/maximized from persisted settings (best-effort)
             let handle = app.handle();
+            let open_item = MenuItemBuilder::with_id("open", "Open Aqua Client").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Exit Aqua Client").build(app)?;
+            let tray_menu = MenuBuilder::new(app).items(&[&open_item, &quit_item]).build()?;
+            let mut tray = TrayIconBuilder::new()
+                .menu(&tray_menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| {
+                    if event.id().as_ref() == "open" {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    } else if event.id().as_ref() == "quit" {
+                        if let Some(state) = app.try_state::<QuickStartupState>() {
+                            if let Ok(mut allow_close) = state.allow_close.lock() {
+                                *allow_close = true;
+                            }
+                        }
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.close();
+                        }
+                    }
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray = tray.icon(icon);
+            }
+            tray.build(app)?;
             let win_opt = app.get_webview_window("main");
             if let Some(win) = win_opt {
                 // Read saved settings
@@ -88,6 +127,19 @@ fn main() {
                             }
                             let _ = save_settings(app_handle_for_events.clone(), s2);
                         }
+                        WindowEvent::CloseRequested { api, .. } => {
+                            let allow_close = app_handle_for_events
+                                .try_state::<QuickStartupState>()
+                                .and_then(|state| state.allow_close.lock().ok().map(|value| *value))
+                                .unwrap_or(false);
+                            if !allow_close && get_settings(app_handle_for_events.clone()).quick_startup {
+                                api.prevent_close();
+                                if let Some(window) = app_handle_for_events.get_webview_window("main") {
+                                    let _ = window.hide();
+                                }
+                                let _ = app_handle_for_events.emit("quick-startup-backgrounded", ());
+                            }
+                        }
                         _ => {}
                     }
                 });
@@ -98,6 +150,9 @@ fn main() {
         .manage(LaunchState {
             running: Mutex::new(false),
             child_pid: Mutex::new(None),
+        })
+        .manage(QuickStartupState {
+            allow_close: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
@@ -155,6 +210,7 @@ fn main() {
             mod_browser::search_modrinth,
             mod_browser::install_modrinth_project,
             mod_browser::list_instance_items,
+            mod_browser::list_instance_updates,
             mod_browser::remove_instance_item,
             mod_browser::is_version_installed,
             mods::rename_instance,

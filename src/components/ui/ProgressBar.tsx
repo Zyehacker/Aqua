@@ -1,5 +1,5 @@
 import { cn, formatPercent } from '../../utils/cn'
-import { motion } from 'framer-motion'
+import AnimatedProgress from '../motion/AnimatedProgress'
 
 type ProgressBarProps = {
   value: number
@@ -34,13 +34,7 @@ export default function ProgressBar({
         aria-valuemax={100}
         aria-label={label}
       >
-        <motion.div
-          className={cn('progress-fill', accent === 'aqua' && 'aqua')}
-          style={{ width: `${progress}%` }}
-          initial={{ width: 0 }}
-          animate={{ width: `${progress}%` }}
-          transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-        />
+        <AnimatedProgress className={cn('progress-fill', accent === 'aqua' && 'aqua')} value={progress} />
       </div>
     </div>
   )

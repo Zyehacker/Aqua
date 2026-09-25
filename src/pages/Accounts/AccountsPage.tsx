@@ -10,6 +10,7 @@ import { useAquaAuth } from '../../hooks/useAquaAuthHook'
 import { appActions } from '../../stores/appStore'
 import { validateMinecraftUsername } from '../../utils/minecraftUsername'
 import { maskEmail } from '../../utils/privacy'
+import { useMaintenance } from '../../hooks/useMaintenanceHook'
 
 type AccountInfo = AccountSummary
 
@@ -17,6 +18,7 @@ export default function AccountsPage() {
   const { t } = useTranslation()
   const toast = useToast()
   const aqua = useAquaAuth()
+  const maintenance = useMaintenance()
   const [account, setAccount] = useState<AccountInfo | null>(null)
   const [accounts, setAccounts] = useState<AccountSummary[]>([])
   const { settings, updateSettings } = useLauncherData()
@@ -152,7 +154,7 @@ export default function AccountsPage() {
         <section className="accounts-section aqua-account-section">
           <div className="accounts-section__heading"><div><span className="eyebrow">Aqua account</span><h2>{aqua.isSignedIn ? (aqua.profile?.display_name || aqua.profile?.username || 'Signed in') : 'Not signed in'}</h2></div><ShieldCheck size={18} className={aqua.isSignedIn ? 'accounts-status--good' : 'accounts-status--muted'} /></div>
           {aqua.loading ? <div className="accounts-inline-state"><LoaderCircle size={16} className="spin" /> Restoring account</div> : aqua.isSignedIn ? <div className="accounts-details"><div><span>Email</span><strong>{maskEmail(aqua.user?.email)}</strong></div><div><span>Verification</span><strong className="accounts-status--good"><CheckCircle2 size={14} /> Email confirmed</strong></div><div><span>Aqua username</span><strong>@{aqua.profile?.username ?? 'Not set'}</strong></div></div> : <p className="accounts-muted">Sign in to use Aqua social features and account services.</p>}
-          <div className="accounts-actions"><Button variant={aqua.isSignedIn ? 'ghost' : 'aqua'} size="sm" onClick={() => appActions.toggleAccount()}><LogIn size={14} />{aqua.isSignedIn ? 'Manage Aqua account' : 'Sign in or create account'}</Button>{aqua.isSignedIn ? <Button variant="ghost" size="sm" onClick={() => void aqua.signOut()}><LogOut size={14} />Sign out</Button> : null}</div>
+          <div className="accounts-actions"><Button variant={aqua.isSignedIn ? 'ghost' : 'aqua'} size="sm" disabled={maintenance.restricted} title={maintenance.restricted ? 'Aqua Account is unavailable during maintenance.' : undefined} onClick={() => appActions.toggleAccount()}><LogIn size={14} />{maintenance.restricted ? 'Aqua Account unavailable' : aqua.isSignedIn ? 'Manage Aqua account' : 'Sign in or create account'}</Button>{aqua.isSignedIn ? <Button variant="ghost" size="sm" disabled={maintenance.restricted} onClick={() => void aqua.signOut()}><LogOut size={14} />Sign out</Button> : null}</div>
         </section>
         <section className="accounts-section minecraft-section">
           <div className="accounts-section__heading"><div><span className="eyebrow">Minecraft identities</span><h2>{settings?.offline_mode ? 'Offline mode' : account ? account.username : 'No active identity'}</h2></div><Link2 size={18} className="accounts-status--muted" /></div>

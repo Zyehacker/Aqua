@@ -1,4 +1,4 @@
-export const TERMS_VERSION = 'V2.0.0'
+export const TERMS_VERSION = 'V2.1.0'
 export const TERMS_STORAGE_KEY = 'aqua.terms.acceptedVersion'
 
 export const TERMS_OF_USE = `# Aqua Client — Terms of Use

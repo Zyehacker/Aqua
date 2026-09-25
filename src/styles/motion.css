@@ -1,0 +1,12 @@
+.motion-drawer-backdrop { position: fixed; inset: 0; z-index: 29; background: rgba(0, 0, 0, .36); }
+.animated-status { display: inline-flex; align-items: center; gap: 6px; }
+.animated-status--success { color: var(--success); }
+.animated-status--error { color: var(--danger); }
+.animated-status--loading { color: var(--text-muted); }
+.aqua-shiny-text { color: inherit; background: linear-gradient(110deg, currentColor 38%, rgba(255,255,255,.8) 50%, currentColor 62%); background-size: 220% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.aqua-animated-tabs { position: relative; }
+.aqua-animated-tabs__indicator { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; border-radius: 999px; background: var(--primary); }
+@media (prefers-reduced-motion: reduce) {
+  .motion-drawer-backdrop, .animated-status, .aqua-animated-tabs__indicator { transition-duration: .01ms !important; }
+  .aqua-shiny-text { background: none; -webkit-text-fill-color: currentColor; }
+}

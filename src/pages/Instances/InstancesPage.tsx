@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { motion } from 'framer-motion'
-import { Copy, FolderOpen, LoaderCircle, Pencil, Play, Plus, Trash2, X } from 'lucide-react'
+import { AnimatePresence, motion } from 'motion/react'
+import { Copy, FolderOpen, LoaderCircle, MoreHorizontal, Pencil, Play, Plus, Trash2, X } from 'lucide-react'
 import Button from '../../components/ui/Button'
 import * as tauri from '../../utils/tauri'
 import type { BackendInstance } from '../../utils/tauri'
@@ -14,6 +14,9 @@ import { instanceStatus, statusClass } from '../../utils/instanceStatus'
 import { useLauncherData } from '../../hooks/useLauncherDataHook'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { useTranslation } from '../../useTranslation'
+import { Link } from 'react-router-dom'
+import { MOTION } from '../../lib/motion'
+import { AnimatedList, AnimatedModal } from '../../components/motion'
 
 type LoaderOption = { version: string; stable?: boolean; recommended?: boolean }
 type CreateForm = { name: string; mcVersion: string; loader: 'vanilla' | 'fabric' | 'forge'; loaderVersion: string }
@@ -53,8 +56,15 @@ export default function InstancesPage() {
   const [editJavaArgs, setEditJavaArgs] = useState('')
   const [provisioningSteps, setProvisioningSteps] = useState<ProvisioningStep[]>([])
   const [instanceQuery, setInstanceQuery] = useState('')
+  const [instanceFilter, setInstanceFilter] = useState('')
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
   const creatingRef = useRef(false)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setInstanceFilter(instanceQuery), 180)
+    return () => window.clearTimeout(timer)
+  }, [instanceQuery])
 
   useEffect(() => {
     if (!createOpen) return
@@ -202,6 +212,7 @@ export default function InstancesPage() {
   }, [toast])
 
   const deleteInst = useCallback(async (id: string, name: string) => {
+    if (!window.confirm(`Delete “${name}”? This removes the instance files and cannot be undone.`)) return
     try {
       await tauri.deleteInstance(id, settings?.mc_dir)
       toast.pushToast(`Deleted ${name}`, 'success')
@@ -262,10 +273,10 @@ export default function InstancesPage() {
   }, [editIconPath, editInstance, editJavaArgs, editMemory, editName, loadInstances, refreshLauncher, settings, toast])
 
   const filteredInstances = useMemo(() => {
-    const query = instanceQuery.trim().toLowerCase()
+    const query = instanceFilter.trim().toLowerCase()
     if (!query) return instances
     return instances.filter((instance) => [instance.name, instance.mc_version, instance.loader].some((value) => value.toLowerCase().includes(query)))
-  }, [instanceQuery, instances])
+  }, [instanceFilter, instances])
   
   const createInst = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -376,7 +387,7 @@ export default function InstancesPage() {
         </div>
         {filteredInstances.length === 0 ? (
           <Card><EmptyState title="No matching instances" description="Try a different name, Minecraft version, or loader." /></Card>
-        ) : <div className="grid-2">
+        ) : <AnimatedList className="grid-2"><AnimatePresence initial={false} mode="popLayout">
           {filteredInstances.map((instance) => {
             const displayName = formatInstanceDisplayName(instance)
             const heading = formatInstanceHeading(instance)
@@ -389,9 +400,12 @@ export default function InstancesPage() {
             <motion.article
               key={instance.id}
               className="instance-card"
+              aria-current={activeInstanceId === instance.id ? 'true' : undefined}
+              layout
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.22 }}
+              exit={{ opacity: 0, y: -8, scale: 0.98 }}
+              transition={MOTION.list}
             >
               <div className="instance-card__top">
                 <div className="instance-card__identity"><InstanceIcon instance={instance} size={20} /><div>
@@ -420,54 +434,27 @@ export default function InstancesPage() {
                   <Play size={14} />
                   Launch
                 </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => openEdit(instance)}
-                >
-                  <Pencil size={14} />
-                  Edit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => openFolder(instance.id, heading)}
-                >
-                  <FolderOpen size={14} />
-                  Folder
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => duplicateInst(instance.id, heading, instance.name)}
-                >
-                  <Copy size={14} />
-                  Duplicate
-                </Button>
-                {status === 'Failed' || status === 'Not installed' ? (
-                  <Button size="sm" variant="ghost" onClick={() => void repairInst(instance.id, heading)}>
-                    Repair
-                  </Button>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="danger"
-                  onClick={() => deleteInst(instance.id, heading)}
-                >
-                  <Trash2 size={14} />
-                  Delete
-                </Button>
+                <Link to="/content?tab=installed" className="btn btn-ghost btn-sm" onClick={() => void selectInstance(instance.id)}>Manage content</Link>
+                <div className="instance-card__menu-wrap">
+                  <Button size="sm" variant="ghost" aria-label={`More actions for ${heading}`} onClick={() => setOpenMenu((current) => current === instance.id ? null : instance.id)}><MoreHorizontal size={15} /></Button>
+                  {openMenu === instance.id ? <div className="instance-card__menu" role="menu">
+                    <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); openEdit(instance) }}><Pencil size={13} />Edit instance</button>
+                    <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); void openFolder(instance.id, heading) }}><FolderOpen size={13} />Open folder</button>
+                    <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); void duplicateInst(instance.id, heading, instance.name) }}><Copy size={13} />Duplicate</button>
+                    {status === 'Failed' || status === 'Not installed' ? <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); void repairInst(instance.id, heading) }}><LoaderCircle size={13} />Repair</button> : null}
+                    <button type="button" role="menuitem" className="danger" onClick={() => { setOpenMenu(null); void deleteInst(instance.id, heading) }}><Trash2 size={13} />Delete</button>
+                  </div> : null}
+                </div>
               </div>
             </motion.article>
             )
           })}
-        </div>}
+        </AnimatePresence></AnimatedList>}
         </>
       )}
 
-      {createOpen ? (
-        <div className="dialog-backdrop" role="presentation" onMouseDown={() => !createBusy && setCreateOpen(false)}>
-          <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="create-instance-title" onMouseDown={(event) => event.stopPropagation()}>
+      <AnimatedModal open={createOpen} onClose={() => { if (!createBusy) setCreateOpen(false) }}>
+          <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="create-instance-title">
             <div className="dialog__header">
               <div>
                 <p className="eyebrow">{t('nav.instances')}</p>
@@ -548,14 +535,12 @@ export default function InstancesPage() {
               </div>
             </form>
           </section>
-        </div>
-      ) : null}
+      </AnimatedModal>
 
-      {editInstance ? (
-        <div className="dialog-backdrop" role="presentation" onMouseDown={() => setEditInstance(null)}>
-          <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="edit-instance-title" onMouseDown={(event) => event.stopPropagation()}>
+      <AnimatedModal open={Boolean(editInstance)} onClose={() => setEditInstance(null)}>
+          {editInstance ? <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="edit-instance-title">
             <div className="dialog__header">
-              <div><p className="eyebrow">{t('common.instanceSettings')}</p><h2 id="edit-instance-title">{t('common.edit')} {editInstance.name}</h2></div>
+              <div><p className="eyebrow">INSTANCE SETTINGS</p><h2 id="edit-instance-title">{t('common.edit')} {editInstance.name}</h2></div>
               <Button variant="ghost" size="icon" aria-label="Close" onClick={() => setEditInstance(null)}><X size={16} /></Button>
             </div>
             <form onSubmit={saveEdit}>
@@ -565,19 +550,20 @@ export default function InstancesPage() {
                   <div className="field field-wide"><span>Instance icon</span><div className="instance-icon-picker"><img src={editInstance.icon_data || '/favicon.png'} alt="Current instance icon" /><div><strong>{editIconPath ? 'PNG selected' : editInstance.icon_data ? 'Custom PNG' : 'Aqua default PNG'}</strong><small>Local PNG only. Stored in this instance.</small></div><Button type="button" variant="ghost" size="sm" onClick={async () => { const path = await open({ filters: [{ name: 'PNG image', extensions: ['png'] }], multiple: false, directory: false }); if (typeof path === 'string') setEditIconPath(path) }}>Choose PNG</Button></div></div>
                 </div></fieldset>
                 <fieldset className="instance-editor__group"><legend>Runtime</legend><div className="form-grid">
-                  <label className="field field-wide"><span>Java runtime</span><input value={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} readOnly title={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} /></label>
+                  <label className="field field-wide"><span>Java runtime</span><input className="path-input" value={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} readOnly title={editInstance.java_path ?? settings?.java_path ?? 'Auto-resolved'} /></label>
                   <label className="field field-wide"><span>Game directory</span><input value={editInstance.game_dir ?? 'Default instance folder'} readOnly title={editInstance.game_dir ?? 'Default instance folder'} /></label>
                 </div></fieldset>
                 <fieldset className="instance-editor__group"><legend>Memory</legend><div className="form-grid">
                   <label className="field"><span>Memory (MB)</span><input type="number" min="512" step="512" value={editMemory} onChange={(event) => setEditMemory(event.target.value)} /></label>
                 </div></fieldset>
-                <details className="instance-editor__advanced"><summary>Advanced / JVM arguments</summary><label className="field"><span>Java arguments</span><textarea rows={2} value={editJavaArgs} onChange={(event) => setEditJavaArgs(event.target.value)} /></label></details>
+                <details className="instance-editor__advanced"><summary>Advanced / JVM arguments</summary><label className="field"><span>Java arguments</span><textarea className="code-input" rows={5} spellCheck={false} value={editJavaArgs} onChange={(event) => setEditJavaArgs(event.target.value)} placeholder="-XX:+UseG1GC&#10;-XX:+UnlockExperimentalVMOptions" /></label></details>
               </div>
               <div className="dialog__actions"><Button variant="ghost" type="button" onClick={() => setEditInstance(null)}>{t('common.cancel')}</Button><Button variant="aqua" type="submit">{t('common.saveChanges')}</Button></div>
             </form>
-          </section>
-        </div>
-      ) : null}
+          </section> : null}
+      </AnimatedModal>
     </div>
   )
 }
+
+

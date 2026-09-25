@@ -1,4 +1,4 @@
-export type ToastVariant = 'success' | 'error' | 'info'
+export type ToastVariant = 'success' | 'error' | 'warning' | 'info'
 
 export type ContentCategory =
   | 'overview'

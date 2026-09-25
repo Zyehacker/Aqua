@@ -1,9 +1,10 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { AnimatePresence } from 'motion/react'
 import { CheckCircle2, Info, AlertTriangle, X } from 'lucide-react'
 import type { ToastVariant } from '../types'
 import { ToastContext } from './toastContext'
 import { playUiSound } from '../utils/uiSound'
+import AnimatedToast from './motion/AnimatedToast'
 
 type Toast = { id: string; message: string; variant: ToastVariant }
 
@@ -16,7 +17,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     if (visibleKeys.current.has(key)) return
     visibleKeys.current.add(key)
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-    setToasts((current) => [...current, { id, message, variant }])
+    setToasts((current) => [...current, { id, message, variant }].slice(-5))
     if (variant === 'error') playUiSound('error')
     if (variant === 'success') playUiSound('notification')
     window.setTimeout(() => {
@@ -41,6 +42,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         return <CheckCircle2 size={18} color="var(--success)" />
       case 'error':
         return <AlertTriangle size={18} color="var(--danger)" />
+      case 'warning':
+        return <AlertTriangle size={18} color="var(--warning)" />
       default:
         return <Info size={18} color="var(--info)" />
     }
@@ -52,14 +55,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       <div className="toast-viewport" aria-live="polite" aria-relevant="additions">
         <AnimatePresence>
           {toasts.map((toast) => (
-            <motion.div
-              key={toast.id}
-              className={`toast ${toast.variant}`}
-              initial={{ opacity: 0, y: 12, scale: 0.98 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.98 }}
-              transition={{ duration: 0.2 }}
-            >
+            <AnimatedToast key={toast.id} className={`toast ${toast.variant}`}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{ display: 'grid', placeItems: 'center' }}>{iconFor(toast.variant)}</div>
               </div>
@@ -71,7 +67,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               >
                 <X size={16} />
               </button>
-            </motion.div>
+            </AnimatedToast>
           ))}
         </AnimatePresence>
       </div>

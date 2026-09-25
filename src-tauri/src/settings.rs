@@ -18,6 +18,12 @@ pub struct Settings {
     pub mc_dir: Option<String>,
     #[serde(default)]
     pub instance_id: Option<String>,
+    /// One-shot multiplayer target supplied by the Home server join action.
+    /// It is not persisted by save_settings; it only travels through a launch request.
+    #[serde(default, skip_serializing)]
+    pub server_address: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub server_port: Option<u16>,
     #[serde(default)]
     pub offline_mode: bool,
     #[serde(default = "default_offline_profile_name")]
@@ -41,6 +47,8 @@ pub struct Settings {
     pub show_snapshots: bool,
     #[serde(default = "default_minimize_on_launch")]
     pub minimize_on_launch: bool,
+    #[serde(default = "default_quick_startup")]
+    pub quick_startup: bool,
     // Optional window state persisted between launches
     #[serde(default)]
     pub window_x: Option<i32>,
@@ -64,6 +72,10 @@ fn default_minimize_on_launch() -> bool {
     true
 }
 
+fn default_quick_startup() -> bool {
+    true
+}
+
 fn default_language() -> String {
     "en".to_string()
 }
@@ -73,7 +85,7 @@ fn default_performance_profile() -> String {
 }
 
 fn default_offline_profile_name() -> String {
-    "Aqua Player".to_string()
+    "Aqua_Player".to_string()
 }
 
 fn default_resolution_width() -> u32 { 854 }
@@ -91,6 +103,8 @@ impl Default for Settings {
             java_runtime: None,
             mc_dir: None,
             instance_id: None,
+            server_address: None,
+            server_port: None,
             offline_mode: false,
             offline_profile_name: default_offline_profile_name(),
             offline_profiles: vec![OfflineProfile { id: "default-offline".to_string(), name: default_offline_profile_name() }],
@@ -104,6 +118,7 @@ impl Default for Settings {
             performance_profile: default_performance_profile(),
             show_snapshots: false,
             minimize_on_launch: true,
+            quick_startup: true,
             window_x: None,
             window_y: None,
             window_width: None,
@@ -642,6 +657,7 @@ fn merge_settings_with_defaults(raw: Settings) -> Settings {
     merged.performance_profile = if raw.performance_profile.trim().is_empty() { merged.performance_profile } else { raw.performance_profile };
     merged.show_snapshots = raw.show_snapshots;
     merged.minimize_on_launch = raw.minimize_on_launch;
+    merged.quick_startup = raw.quick_startup;
     merged.window_x = raw.window_x.or(merged.window_x);
     merged.window_y = raw.window_y.or(merged.window_y);
     merged.window_width = raw.window_width.or(merged.window_width);
@@ -663,6 +679,16 @@ pub fn get_settings(app: AppHandle) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    if settings.offline_profiles.len() > 2 {
+        return Err("Offline account limit reached (2/2).".to_string());
+    }
+    let mut names = std::collections::HashSet::new();
+    for profile in &settings.offline_profiles {
+        let key = profile.name.trim().to_lowercase();
+        if !names.insert(key) {
+            return Err("An offline account with this name already exists.".to_string());
+        }
+    }
     let path = settings_path(&app);
     let normalized = merge_settings_with_defaults(settings);
     let data = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;

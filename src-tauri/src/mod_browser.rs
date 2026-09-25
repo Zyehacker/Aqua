@@ -16,8 +16,8 @@ fn shared_client() -> Arc<reqwest::Client> {
             Arc::new(
                 reqwest::Client::builder()
                     .user_agent("AquaClient/1.0")
-                    .timeout(Duration::from_secs(45))
-                    .connect_timeout(Duration::from_secs(15))
+                    .timeout(Duration::from_secs(10))
+                    .connect_timeout(Duration::from_secs(10))
                     .build()
                     .expect("Aqua HTTP client failed to build"),
             )
@@ -84,7 +84,7 @@ async fn get_json_with_retry(
         }
 
         if attempt + 1 < MODRINTH_MAX_ATTEMPTS {
-            sleep(Duration::from_millis(300 * (attempt as u64 + 1))).await;
+            sleep(Duration::from_millis(350 * 2_u64.pow(attempt as u32))).await;
         }
     }
 
@@ -113,6 +113,21 @@ pub struct LocalItem {
     pub name: String,
     pub path: String,
     pub size: u64,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalUpdate {
+    pub project_id: String,
+    pub filename: String,
+    pub current_version_id: String,
+    pub latest_version_id: String,
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -120,6 +135,8 @@ struct InstalledProject {
     project_id: String,
     version_id: String,
     filename: String,
+    #[serde(default)]
+    icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -592,7 +609,7 @@ fn target_mc_dir(mc_dir: Option<String>) -> Result<PathBuf, String> {
         .ok_or_else(|| "Could not determine .minecraft directory".to_string())
 }
 
-fn read_dir_items(dir: &Path) -> Vec<LocalItem> {
+fn read_dir_items(dir: &Path, installed_projects: &[InstalledProject]) -> Vec<LocalItem> {
     let mut out = Vec::new();
 
     if let Ok(entries) = fs::read_dir(dir) {
@@ -608,10 +625,19 @@ fn read_dir_items(dir: &Path) -> Vec<LocalItem> {
                     continue;
                 }
                 if let Ok(meta) = entry.metadata() {
+                    let filename = entry.file_name().to_string_lossy().to_string();
+                    let enabled = !filename.to_ascii_lowercase().ends_with(".disabled");
+                    let canonical_filename = filename
+                        .strip_suffix(".disabled")
+                        .unwrap_or(&filename);
+                    let project = installed_projects.iter().find(|item| item.filename == filename || item.filename == canonical_filename);
                     out.push(LocalItem {
-                        name: entry.file_name().to_string_lossy().to_string(),
+                        name: filename,
                         path: path.to_string_lossy().to_string(),
                         size: meta.len(),
+                        project_id: project.map(|item| item.project_id.clone()),
+                        icon_url: project.and_then(|item| item.icon_url.clone()),
+                        enabled,
                     });
                 }
             }
@@ -1084,7 +1110,40 @@ pub fn list_instance_items(
         .unwrap_or_else(|| instance_dir(&mc_dir, &instance_id));
     let folder = instance.join(folder_for(&category));
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-    Ok(read_dir_items(&folder))
+    let installed_projects = read_installed_projects(&folder);
+    Ok(read_dir_items(&folder, &installed_projects))
+}
+
+#[tauri::command]
+pub async fn list_instance_updates(
+    instance_id: String,
+    category: String,
+    mc_dir: Option<String>,
+) -> Result<Vec<LocalUpdate>, String> {
+    let root = target_mc_dir(mc_dir)?;
+    let metadata = read_metadata(&root, &instance_id)
+        .ok_or_else(|| format!("Instance metadata not found: {instance_id}"))?;
+    let instance = metadata.game_dir.map(PathBuf::from).unwrap_or_else(|| instance_dir(&root, &instance_id));
+    let folder = instance.join(folder_for(&category));
+    let installed = read_installed_projects(&folder);
+    if installed.is_empty() { return Ok(Vec::new()); }
+    let client = shared_client();
+    let project_type = project_type_for(&category);
+    let mut updates = Vec::new();
+    for entry in installed {
+        let versions = project_versions(&client, &entry.project_id).await?;
+        let latest = versions.into_iter()
+            .filter(|version| compatible_version_for(version, &metadata.mc_version, &metadata.loader, project_type).0)
+            .filter(|version| version_file(version).is_some())
+            .max_by(|a, b| a["date_published"].as_str().cmp(&b["date_published"].as_str()));
+        if let Some(version) = latest {
+            let latest_id = version["id"].as_str().unwrap_or_default();
+            if !latest_id.is_empty() && latest_id != entry.version_id {
+                updates.push(LocalUpdate { project_id: entry.project_id, filename: entry.filename, current_version_id: entry.version_id, latest_version_id: latest_id.to_string(), icon_url: entry.icon_url });
+            }
+        }
+    }
+    Ok(updates)
 }
 
 #[tauri::command]
@@ -1353,6 +1412,7 @@ pub async fn install_modrinth_project(
                 project_id: file.project_id.clone(),
                 version_id: file.version_id.clone(),
                 filename: safe_filename.clone(),
+                icon_url: if file.project_id == project_id { icon_url.clone() } else { installed_by_project.get(&file.project_id).and_then(|item| item.icon_url.clone()) },
             },
         );
         if file.project_id == project_id {

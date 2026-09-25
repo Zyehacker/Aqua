@@ -1,4 +1,5 @@
-import { lazy, useEffect, useState } from 'react'
+import { lazy, useEffect, useState, type ReactNode } from 'react'
+import { AnimatePresence, LayoutGroup, MotionConfig, motion } from 'motion/react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import MainLayout from './layouts/MainLayout'
 import { ToastProvider } from './components/ToastProvider'
@@ -15,12 +16,15 @@ import TermsGate from './components/legal/TermsGate'
 import AuthCallbackGate from './components/account/AuthCallbackGate'
 import AdminPage, { AdminRoute } from './pages/Admin/AdminPage'
 import { MaintenanceProvider } from './hooks/useMaintenance'
+import './styles/motion.css'
+import ErrorBoundary from './components/ErrorBoundary'
 
 const HomePage = lazy(() => import('./pages/Home/HomePage'))
 const InstancesPage = lazy(() => import('./pages/Instances/InstancesPage'))
 const ContentPage = lazy(() => import('./pages/Content/ContentPage'))
 const DownloadsPage = lazy(() => import('./pages/Downloads/DownloadsPage'))
 const AccountsPage = lazy(() => import('./pages/Accounts/AccountsPage'))
+const ProfilesPage = lazy(() => import('./pages/Profiles/ProfilesPage'))
 const SettingsPage = lazy(() => import('./pages/Settings/SettingsPage'))
 const LogsPage = lazy(() => import('./pages/Logs/LogsPage'))
 const SocialsPage = lazy(() => import('./pages/Socials/SocialsPage'))
@@ -52,21 +56,12 @@ function AppThemeBridge() {
   return null
 }
 
-function Application() {
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void Promise.all([
-        import('./pages/Instances/InstancesPage'),
-        import('./pages/Content/ContentPage'),
-        import('./pages/Downloads/DownloadsPage'),
-        import('./pages/Accounts/AccountsPage'),
-        import('./pages/Settings/SettingsPage'),
-        import('./pages/Socials/SocialsPage'),
-      ])
-    }, 1200)
-    return () => window.clearTimeout(timer)
-  }, [])
+function MotionRoot({ children }: { children: ReactNode }) {
+  const reduceMotion = useAppStore((s) => s.reduceMotion)
+  return <MotionConfig reducedMotion={reduceMotion ? 'always' : 'user'}>{children}</MotionConfig>
+}
 
+function Application() {
   return (
     <>
       <BrowserRouter>
@@ -76,12 +71,12 @@ function Application() {
             <Route path="instances" element={<InstancesPage />} />
             <Route path="content" element={<ContentPage />} />
             <Route path="downloads" element={<DownloadsPage />} />
-            <Route path="socials" element={<SocialsPage />} />
+            <Route path="socials" element={<ErrorBoundary><SocialsPage /></ErrorBoundary>} />
             <Route path="admin" element={<AdminRoute><AdminPage /></AdminRoute>} />
             <Route path="accounts" element={<AccountsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="logs" element={<LogsPage />} />
-            <Route path="profiles" element={<Navigate to="/instances" replace />} />
+            <Route path="profiles" element={<ProfilesPage />} />
             <Route path="performance" element={<Navigate to="/settings" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
@@ -94,8 +89,10 @@ function Application() {
 
 function StartupGate() {
   const { loading, error } = useLauncherData()
+  const reduceMotion = useAppStore((state) => state.reduceMotion)
   const [splashElapsed, setSplashElapsed] = useState(false)
   const [forceReady, setForceReady] = useState(false)
+  const [showSplash, setShowSplash] = useState(true)
 
   // Show the splash only briefly while the core launcher data loads. A hard
   // deadline guarantees the app never sits on a permanent "Loading instances"
@@ -108,28 +105,39 @@ function StartupGate() {
 
   useEffect(() => {
     if (loading || error || forceReady) return undefined
-    const timer = window.setTimeout(() => setSplashElapsed(true), STARTUP_MOTION.splashDuration)
+    const timer = window.setTimeout(() => setSplashElapsed(true), reduceMotion ? 180 : 1100)
     return () => window.clearTimeout(timer)
-  }, [error, forceReady, loading])
+  }, [error, forceReady, loading, reduceMotion])
 
   const ready = (splashElapsed && !loading && !error) || forceReady
-  return ready ? <><Application /><TermsGate /></> : <StartupSplash />
+  useEffect(() => {
+    if (!ready) return undefined
+    const timer = window.setTimeout(() => setShowSplash(false), reduceMotion ? 120 : STARTUP_MOTION.fade)
+    return () => window.clearTimeout(timer)
+  }, [ready, reduceMotion])
+
+  return <LayoutGroup id="aqua-launcher-transition"><AnimatePresence initial={false} mode="sync">
+    {ready ? <motion.div key="application" className="startup-application" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: reduceMotion ? 0.08 : 0.28 }}><Application /><TermsGate /></motion.div> : null}
+    {showSplash ? <StartupSplash key="splash" exiting={ready} /> : null}
+  </AnimatePresence></LayoutGroup>
 }
 
 function App() {
   return (
-    <ToastProvider>
-      <LauncherDataProvider>
-        <MaintenanceProvider>
-          <AquaAuthProvider>
-            <LocalizationProvider>
-              <AppThemeBridge />
-              <AuthCallbackGate><StartupGate /></AuthCallbackGate>
-            </LocalizationProvider>
-          </AquaAuthProvider>
-        </MaintenanceProvider>
-      </LauncherDataProvider>
-    </ToastProvider>
+    <ErrorBoundary><MotionRoot>
+      <ToastProvider>
+        <LauncherDataProvider>
+          <MaintenanceProvider>
+            <AquaAuthProvider>
+              <LocalizationProvider>
+                <AppThemeBridge />
+                <AuthCallbackGate><StartupGate /></AuthCallbackGate>
+              </LocalizationProvider>
+            </AquaAuthProvider>
+          </MaintenanceProvider>
+        </LauncherDataProvider>
+      </ToastProvider>
+    </MotionRoot></ErrorBoundary>
   )
 }
 
